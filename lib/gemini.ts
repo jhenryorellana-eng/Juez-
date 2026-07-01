@@ -71,8 +71,34 @@ const VERDICT_SCHEMA: Schema = {
     summary: { type: Type.STRING },
     strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
     weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
+    prepLevel: { type: Type.STRING, enum: ["A", "B", "C"] },
+    prepFactors: { type: Type.ARRAY, items: { type: Type.STRING } },
+    matrix: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          element: { type: Type.STRING },
+          status: { type: Type.STRING, enum: ["solido", "refuerzo", "critico"] },
+          note: { type: Type.STRING },
+        },
+        required: ["element", "status", "note"],
+      },
+    },
+    crossExam: { type: Type.ARRAY, items: { type: Type.STRING } },
   },
-  required: ["score", "level", "headline", "summary", "strengths", "weaknesses"],
+  required: [
+    "score",
+    "level",
+    "headline",
+    "summary",
+    "strengths",
+    "weaknesses",
+    "prepLevel",
+    "prepFactors",
+    "matrix",
+    "crossExam",
+  ],
 };
 
 /** Documento del caso: PDF (bytes en base64) o texto ya extraído (.docx/.txt). */
@@ -124,6 +150,9 @@ export async function evaluateCase(doc: CaseDocument): Promise<Verdict> {
   }
 }
 
+const PREP_LEVELS = new Set(["A", "B", "C"]);
+const MATRIX_STATUSES = new Set(["solido", "refuerzo", "critico"]);
+
 /** Asegura que el resultado tenga valores coherentes y seguros. */
 function normalizeVerdict(v: Verdict): Verdict {
   const score = clamp(Math.round(Number(v.score) || 0), 0, 100);
@@ -134,6 +163,12 @@ function normalizeVerdict(v: Verdict): Verdict {
     summary: v.summary ?? "",
     strengths: (v.strengths ?? []).slice(0, 3),
     weaknesses: (v.weaknesses ?? []).slice(0, 3),
+    prepLevel: PREP_LEVELS.has(v.prepLevel) ? v.prepLevel : score >= 70 ? "A" : score >= 40 ? "B" : "C",
+    prepFactors: (v.prepFactors ?? []).slice(0, 3),
+    matrix: (v.matrix ?? [])
+      .filter((m) => m && MATRIX_STATUSES.has(m.status))
+      .slice(0, 8),
+    crossExam: (v.crossExam ?? []).slice(0, 5),
   };
 }
 

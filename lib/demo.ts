@@ -31,6 +31,21 @@ export function buildDemoVerdict(contentLength: number): Verdict {
         : "Falta verificar que cada afirmación esté respaldada con evidencia corroborativa.",
       "No se han verificado plazos ni barras legales aplicables en este modo demo.",
     ],
+    prepLevel: score >= 70 ? "A" : score >= 40 ? "B" : "C",
+    prepFactors: [
+      "Evaluación de demostración: sin análisis legal real del expediente.",
+      "Se requiere la conexión con la IA para revisar nexo, credibilidad y plazos.",
+    ],
+    matrix: [
+      { element: "Documentación", status: detail > 0.5 ? "solido" : "refuerzo", note: "El caso está por escrito; el nivel de detalle determina la evaluación." },
+      { element: "Evidencia", status: "refuerzo", note: "Pendiente de verificar corroboración documental en modo demo." },
+      { element: "Plazos y barras", status: "refuerzo", note: "No verificados en modo demo; requieren revisión real." },
+    ],
+    crossExam: [
+      "¿Qué evidencia respalda cada hecho central de tu relato?",
+      "¿Presentaste tu solicitud dentro del plazo de un año desde tu última entrada?",
+      "¿Hay inconsistencias entre tu declaración y tus entrevistas previas?",
+    ],
   };
 }
 

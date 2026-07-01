@@ -110,6 +110,23 @@ Pedido: diseño único, que resalte, super tecnológico, animaciones/loading per
 - [x] Botón primario con brillo periódico (btn-sheen). prefers-reduced-motion respetado.
 - [x] Probado end-to-end con PDF real (65% media, evaluación real). Build verde.
 
+## AGENTE v2 — System prompt profesional del evaluador ✅ (2026-07-01)
+Integrado el prompt del equipo (prompt_agente_evaluador_asilo_v2.md) con 2 adaptaciones
+decididas por el usuario:
+- [x] Se MANTIENE el % (reencuadrado como "solidez del expediente hoy", nunca garantía)
+      pese a que el prompt original lo prohibía; se añade el Nivel de Preparación A/B/C.
+- [x] Salida concisa + lo más valioso del informe: Matriz de Solidez por elemento legal
+      (solido/refuerzo/critico) y contrainterrogatorio simulado (3-5 preguntas).
+- [x] Adaptaciones técnicas: sin fase de admisión (flujo one-shot con documento: lo que
+      falte baja el score y aparece en la matriz), sin etiqueta literal [VERIFICAR VIGENCIA]
+      (se matiza con prudencia), salida JSON estructurada.
+- [x] Schema y tipos ampliados (prepLevel, prepFactors, matrix, crossExam) + demo actualizado.
+- [x] ResultCard: badge A/B/C, Matriz de solidez, "Prepárate para estas preguntas",
+      disclaimer con el texto del prompt.
+- [x] Probado con el PDF real: 68%/B, "Credibilidad: crítico" detectado, citas correctas
+      (8 CFR § 208.15, INA § 208(a)(2)(B), Matter of S-A-), plazo de 1 año verificado con
+      las fechas del documento, contrainterrogatorio realista. Build verde.
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.
