@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    /* Fondo neutro detrás del "teléfono" en escritorio */
+    background: #e6e6eb;
+    overscroll-behavior: none;
+  }
+
+  /* Sin resaltado azul al tocar en móvil */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@layer components {
+  .ios-field {
+    @apply w-full rounded-ios border border-sys-sep bg-sys-bg px-4 py-3.5
+      text-[17px] leading-snug text-label outline-none transition-all duration-200
+      placeholder:text-label-tertiary
+      focus:border-blue/40 focus:bg-white focus:ring-4 focus:ring-blue/10;
+  }
+
+  .ios-btn {
+    @apply flex w-full items-center justify-center gap-2 rounded-full bg-blue px-6 py-4
+      text-[17px] font-semibold text-white shadow-btn transition-all duration-200
+      active:scale-[0.97] disabled:opacity-40 disabled:shadow-none;
+  }
+
+  .ios-btn-dark {
+    @apply flex w-full items-center justify-center gap-2 rounded-full bg-label px-6 py-4
+      text-[17px] font-semibold text-white transition-all duration-200
+      active:scale-[0.97] disabled:opacity-40;
+  }
+
+  .ios-chip {
+    @apply inline-flex items-center gap-1.5 rounded-full bg-sys-bg px-3 py-1
+      text-[13px] font-medium text-label-secondary;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
