@@ -8,7 +8,7 @@ import type { VerdictResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 /** Texto máximo que se envía al modelo (los .docx/.txt muy largos se recortan). */
 const MAX_TEXT_CHARS = 120_000;

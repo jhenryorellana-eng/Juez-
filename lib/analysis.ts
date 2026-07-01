@@ -1,5 +1,9 @@
-/** Reglas del documento que sube el usuario. */
-export const MAX_FILE_MB = 15;
+/**
+ * Reglas del documento que sube el usuario.
+ * Límite de 4 MB: las funciones de Vercel rechazan cuerpos > 4.5 MB en el borde,
+ * y un PDF más grande además dispara la latencia del análisis.
+ */
+export const MAX_FILE_MB = 4;
 export const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
 
 /** Extensiones aceptadas (el .doc antiguo no: se pide convertirlo a PDF). */

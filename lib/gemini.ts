@@ -131,10 +131,13 @@ export async function evaluateCase(doc: CaseDocument): Promise<Verdict> {
   };
 
   try {
+    // Thinking LOW: con MEDIUM la evaluación de un PDF tardaba ~2 minutos, lo que
+    // supera el corte de ~60 s de los navegadores móviles (Safari) y tumbaba la
+    // función en producción. LOW mantiene la calidad con el prompt estructurado.
     const verdict = await generateJson<Verdict>({
       model: MODELS.judge,
       contents,
-      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } },
+      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 2,
     });
     return normalizeVerdict(verdict);
@@ -143,7 +146,7 @@ export async function evaluateCase(doc: CaseDocument): Promise<Verdict> {
     const verdict = await generateJson<Verdict>({
       model: MODELS.judgeFallback,
       contents,
-      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
       retries: 1,
     });
     return normalizeVerdict(verdict);
