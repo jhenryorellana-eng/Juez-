@@ -137,6 +137,25 @@ de 2 KB). Ver lessons.md.
 - [x] Límite de subida 15 MB → 4 MB (Vercel rechaza cuerpos > 4.5 MB en el borde con 413).
 - [x] Verificado contra https://juez.vercel.app tras el redeploy.
 
+## MULTI-DOCUMENTO + ARCHIVOS GRANDES ✅ (2026-07-01)
+Pedido: hasta 100 MB por archivo, lectura completa, hasta 10 documentos.
+- [x] Hasta 10 documentos por evaluación (UI multi-archivo con lista, contador y "agregar otro").
+- [x] Hasta 100 MB por archivo. Dos caminos:
+      · total ≤ 3.5 MB → multipart directo a la función (rápido, sin dependencias);
+      · total > 3.5 MB → subida DIRECTA del navegador a Vercel Blob (@vercel/blob/client)
+        + análisis como TRABAJO EN SEGUNDO PLANO (after() de next/server) + la app
+        consulta GET /api/evaluate?id=... cada 4 s (sobrevive al corte de ~60 s de móviles).
+- [x] PDFs grandes → Files API de Gemini (hasta 2 GB); pequeños → inline. .docx → mammoth
+      (hasta 300k caracteres por doc). Prompt actualizado: CRUZAR consistencia entre documentos.
+- [x] Privacidad: los blobs de documentos se borran al terminar; el resultado se sirve
+      una vez y se borra.
+- [x] Probado local con 2 PDFs contradictorios: detectó la inconsistencia plantada
+      (fecha de detención marzo vs junio ENTRE documentos, con atribución) y otra más
+      (cronología del asesinato) → Nivel C por credibilidad. 16.5 s. Browser E2E ✓.
+- [ ] PENDIENTE (usuario): crear el Blob store en Vercel (Storage → Create → Blob) para
+      habilitar archivos > 3.5 MB en producción. Sin él, los archivos grandes muestran
+      el error "almacenamiento no habilitado".
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.

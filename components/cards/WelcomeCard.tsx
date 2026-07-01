@@ -7,9 +7,9 @@ import { BrandMark } from "@/components/Brand";
 import PulseLine from "@/components/ui/PulseLine";
 
 const POINTS = [
-  { icon: FileUp, text: "Sube tu caso en PDF o Word" },
-  { icon: Zap, text: "La IA analiza tu expediente a fondo" },
-  { icon: Lock, text: "Privado y gratis · tu documento no se guarda" },
+  { icon: FileUp, text: "Sube hasta 10 documentos (PDF o Word)" },
+  { icon: Zap, text: "La IA lee todo tu expediente y lo cruza" },
+  { icon: Lock, text: "Privado y gratis · tus documentos se eliminan al terminar" },
 ];
 
 export default function WelcomeCard() {

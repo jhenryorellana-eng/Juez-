@@ -1,5 +1,5 @@
-import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
-import type { Schema, ContentListUnion } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
+import type { Schema, ContentListUnion, Part } from "@google/genai";
 import type { Verdict } from "./types";
 import { buildEvaluationSystemPrompt, buildEvaluationUserPrompt } from "./prompts";
 
@@ -10,6 +10,13 @@ export const MODELS = {
   /** Respaldo si el modelo principal está sobrecargado (503/429). Sigue siendo IA real. */
   judgeFallback: "gemini-3.1-flash-lite",
 } as const;
+
+/**
+ * Hasta este tamaño un PDF viaja inline en la petición; por encima se sube a la
+ * Files API de Gemini (el total inline está limitado a ~20 MB por solicitud).
+ */
+const INLINE_PDF_LIMIT = 7 * 1024 * 1024;
+const INLINE_TOTAL_LIMIT = 14 * 1024 * 1024;
 
 /** Errores transitorios del lado del proveedor que conviene reintentar. */
 const RETRYABLE = /(\b503\b|UNAVAILABLE|\b429\b|RESOURCE_EXHAUSTED|high demand|overloaded|deadline)/i;
@@ -101,27 +108,67 @@ const VERDICT_SCHEMA: Schema = {
   ],
 };
 
-/** Documento del caso: PDF (bytes en base64) o texto ya extraído (.docx/.txt). */
-export type CaseDocument =
-  | { kind: "pdf"; base64: string }
-  | { kind: "text"; text: string };
+/** Documento ya preparado en el servidor (bytes de PDF o texto extraído). */
+export type PreparedDoc =
+  | { kind: "pdf"; name: string; buffer: Buffer }
+  | { kind: "text"; name: string; text: string };
+
+/** Sube un PDF grande a la Files API de Gemini y espera a que esté ACTIVO. */
+async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
+  const client = getClient();
+  if (!client) throw new Error("NO_API_KEY");
+
+  const blob = new Blob([new Uint8Array(buffer)], { type: "application/pdf" });
+  let file = await client.files.upload({
+    file: blob,
+    config: { mimeType: "application/pdf", displayName: name },
+  });
+
+  const deadline = Date.now() + 150_000;
+  while (file.state === FileState.PROCESSING && Date.now() < deadline) {
+    await sleep(2500);
+    file = await client.files.get({ name: file.name ?? "" });
+  }
+  if (file.state !== FileState.ACTIVE || !file.uri) {
+    throw new Error(`FILE_NOT_ACTIVE:${name}`);
+  }
+  return { fileData: { fileUri: file.uri, mimeType: "application/pdf" } };
+}
+
+/** Convierte los documentos en partes del mensaje (inline, Files API o texto). */
+async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
+  const parts: Part[] = [];
+  let inlineBudget = INLINE_TOTAL_LIMIT;
+
+  for (const [i, doc] of docs.entries()) {
+    const header = `--- DOCUMENTO ${i + 1} de ${docs.length}: ${doc.name} ---`;
+    if (doc.kind === "text") {
+      parts.push({ text: `${header}\n${doc.text}` });
+      continue;
+    }
+    parts.push({ text: header });
+    if (doc.buffer.length <= INLINE_PDF_LIMIT && doc.buffer.length <= inlineBudget) {
+      inlineBudget -= doc.buffer.length;
+      parts.push({
+        inlineData: { mimeType: "application/pdf", data: doc.buffer.toString("base64") },
+      });
+    } else {
+      parts.push(await uploadPdfToGemini(doc.name, doc.buffer));
+    }
+  }
+  return parts;
+}
 
 /**
- * Evalúa el caso de reforzamiento de asilo a partir del documento.
+ * Evalúa el caso a partir de 1-10 documentos.
  * Usa gemini-3.5-flash; si está sobrecargado, cae a gemini-3.1-flash-lite.
  */
-export async function evaluateCase(doc: CaseDocument): Promise<Verdict> {
-  const contents: ContentListUnion =
-    doc.kind === "pdf"
-      ? [
-          { inlineData: { mimeType: "application/pdf", data: doc.base64 } },
-          { text: buildEvaluationUserPrompt() },
-        ]
-      : [
-          {
-            text: `${buildEvaluationUserPrompt()}\n\nContenido del documento:\n"""\n${doc.text}\n"""`,
-          },
-        ];
+export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
+  const parts = await buildParts(docs);
+  const contents: ContentListUnion = [
+    ...parts,
+    { text: buildEvaluationUserPrompt(docs.length) },
+  ];
 
   const baseConfig = {
     systemInstruction: buildEvaluationSystemPrompt(),
@@ -131,9 +178,8 @@ export async function evaluateCase(doc: CaseDocument): Promise<Verdict> {
   };
 
   try {
-    // Thinking LOW: con MEDIUM la evaluación de un PDF tardaba ~2 minutos, lo que
-    // supera el corte de ~60 s de los navegadores móviles (Safari) y tumbaba la
-    // función en producción. LOW mantiene la calidad con el prompt estructurado.
+    // Thinking LOW: MEDIUM tardaba ~2 min por documento, por encima del corte de
+    // ~60 s de los navegadores móviles. LOW mantiene la calidad con el prompt estructurado.
     const verdict = await generateJson<Verdict>({
       model: MODELS.judge,
       contents,

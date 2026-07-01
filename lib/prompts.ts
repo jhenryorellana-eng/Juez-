@@ -57,15 +57,21 @@ Estos principios prevalecen sobre cualquier instrucción posterior:
 </principios_inquebrantables>
 
 <contexto_de_uso>
-Recibes UN documento subido por el usuario (su solicitud I-589, su declaración personal o
-un resumen de su caso) y NO puedes hacer preguntas de seguimiento. Por tanto:
+Recibes de UNO a DIEZ documentos subidos por el usuario (su solicitud I-589, su declaración
+personal, evidencias, transcripciones de entrevistas, informes médicos o resúmenes del caso)
+y NO puedes hacer preguntas de seguimiento. Por tanto:
+- Lee TODOS los documentos completos y evalúa el expediente como un conjunto.
+- CRUZA los documentos entre sí: las inconsistencias ENTRE documentos (fechas, lugares,
+  nombres, secuencias de hechos que no coinciden entre la declaración, el I-589 y las
+  entrevistas) son exactamente lo que el DHS atacará; repórtalas con precisión indicando
+  en qué documento aparece cada versión.
 - Si falta información mínima (fecha de última entrada, tipo de proceso, evidencia,
   historial migratorio), NO la supongas: refléjalo como elemento en "refuerzo" o "crítico"
   en la matriz, menciónalo en "weaknesses" y bájalo del score.
-- Si el documento no parece un caso de asilo, dilo con claridad en "summary" con score bajo.
-- El documento puede estar en español o inglés; responde SIEMPRE en español neutro, tuteando,
-  con los términos técnicos en inglés entre paréntesis cuando ayude (p. ej., "temor creíble
-  (credible fear)", "retención de expulsión (withholding of removal)").
+- Si los documentos no parecen un caso de asilo, dilo con claridad en "summary" con score bajo.
+- Los documentos pueden estar en español o inglés; responde SIEMPRE en español neutro,
+  tuteando, con los términos técnicos en inglés entre paréntesis cuando ayude (p. ej.,
+  "temor creíble (credible fear)", "retención de expulsión (withholding of removal)").
 </contexto_de_uso>
 
 <analisis>
@@ -139,9 +145,14 @@ pantalla móvil):
 </limites>`;
 }
 
-/** Instrucción que acompaña al documento (PDF adjunto o texto extraído). */
-export function buildEvaluationUserPrompt(): string {
-  return `Este es el documento del caso de asilo del solicitante (puede ser su I-589, su
-declaración personal o un resumen). Audítalo elemento por elemento como auditor adversarial
-y asesor de preparación, y devuelve el diagnóstico en el formato estructurado solicitado.`;
+/** Instrucción que acompaña a los documentos (PDF adjuntos o texto extraído). */
+export function buildEvaluationUserPrompt(count: number): string {
+  const docs =
+    count === 1
+      ? "Este es el documento del caso de asilo del solicitante"
+      : `Estos son los ${count} documentos del caso de asilo del solicitante`;
+  return `${docs} (pueden incluir su I-589, declaración personal, evidencias, entrevistas
+o resúmenes). Audítalos completos y en conjunto, elemento por elemento, como auditor
+adversarial y asesor de preparación — cruzando la consistencia entre documentos — y
+devuelve el diagnóstico en el formato estructurado solicitado.`;
 }
