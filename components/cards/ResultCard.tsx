@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import { RotateCcw, CheckCircle2, AlertTriangle, Landmark } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import Reveal from "@/components/ui/Reveal";
@@ -14,13 +15,26 @@ export default function ResultCard() {
   return (
     <div className="flex flex-1 flex-col space-y-4 py-4">
       {/* Resultado principal */}
-      <Reveal className="glass flex flex-col items-center px-6 py-9 text-center">
+      <Reveal className="glass relative flex flex-col items-center overflow-hidden px-6 py-9 text-center">
         {verdictDemo && <span className="pill mb-4 text-gold-deep">Modo demostración</span>}
-        <span className="mb-6 text-[13px] font-bold uppercase tracking-[0.14em] text-ink-muted">
-          Probabilidad de aprobación
-        </span>
-        <ScoreRing value={verdict.score} level={verdict.level} />
-        <h2 className="mt-8 text-balance text-[24px] font-bold leading-tight tracking-tight text-ink sm:text-[26px]">
+        <span className="sys-label mb-6">Análisis completado · Probabilidad de aprobación</span>
+
+        <div className="relative">
+          {/* Radar sutil girando tras el anillo */}
+          <motion.span
+            aria-hidden
+            className="absolute -inset-6 rounded-full opacity-[0.14] blur-[2px]"
+            style={{
+              background:
+                "conic-gradient(from 0deg, transparent 0deg, #012d6a 70deg, transparent 130deg)",
+            }}
+            animate={{ rotate: 360 }}
+            transition={{ duration: 9, ease: "linear", repeat: Infinity }}
+          />
+          <ScoreRing value={verdict.score} level={verdict.level} />
+        </div>
+
+        <h2 className="mt-8 text-balance font-display text-[24px] font-bold leading-tight tracking-tight text-ink sm:text-[26px]">
           {verdict.headline}
         </h2>
         <p className="mt-3 text-balance text-[16px] leading-relaxed text-ink-soft">
@@ -92,10 +106,16 @@ function KeyGroup({
 }) {
   return (
     <div>
-      <h3 className={`mb-3 flex items-center gap-2 text-[16px] font-bold tracking-tight ${color}`}>
+      <div className="mb-3 flex items-center gap-2.5">
         {icon}
-        {title}
-      </h3>
+        <h3 className={`font-display text-[17px] font-bold tracking-tight ${color}`}>
+          {title}
+        </h3>
+        <span className="h-px flex-1 bg-navy/10" />
+        <span className="font-mono text-[11px] font-bold text-navy/35">
+          {String(items.length).padStart(2, "0")}
+        </span>
+      </div>
       <ul className="space-y-2.5">
         {items.map((item, i) => (
           <li key={i} className="flex gap-3 text-[16px] leading-relaxed text-ink">

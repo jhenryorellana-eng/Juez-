@@ -2,10 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { animate, AnimatePresence, motion } from "framer-motion";
-import { Loader2, AlertTriangle, ScanLine, FileText } from "lucide-react";
+import { Loader2, AlertTriangle, FileText, Check } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import { ANALYSIS_PHASES, MIN_ANALYSIS_MS } from "@/lib/analysis";
 import { BrandMark } from "@/components/Brand";
+import PulseLine from "@/components/ui/PulseLine";
 import type { VerdictResponse } from "@/lib/types";
 
 export default function AnalyzingCard() {
@@ -73,11 +74,11 @@ export default function AnalyzingCard() {
 
   return (
     <div className="flex flex-1 flex-col justify-center py-4">
-      <div className="glass p-7 sm:p-8">
+      <div className="glass p-6 sm:p-7">
         <div className="flex flex-col items-center text-center">
           <ThinkingEmblem />
 
-          <span className="pill mt-7">
+          <span className="pill mt-6">
             <span className="flex gap-1">
               <Dot delay="0s" />
               <Dot delay="0.15s" />
@@ -86,7 +87,7 @@ export default function AnalyzingCard() {
             Analizando tu expediente
           </span>
 
-          <div className="mt-5 min-h-[62px]">
+          <div className="mt-4 min-h-[58px]">
             <AnimatePresence mode="wait">
               <motion.div
                 key={phase}
@@ -95,32 +96,16 @@ export default function AnalyzingCard() {
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.4 }}
               >
-                <h2 className="text-[23px] font-bold tracking-tight text-ink sm:text-[25px]">
+                <h2 className="font-display text-[23px] font-bold tracking-tight text-ink sm:text-[25px]">
                   {active.label}
                 </h2>
-                <p className="mt-1.5 text-[15px] text-ink-muted">{active.detail}</p>
+                <p className="mt-1 text-[15px] text-ink-muted">{active.detail}</p>
               </motion.div>
             </AnimatePresence>
           </div>
         </div>
 
-        {/* Progreso */}
-        <div className="mt-6">
-          <div className="mb-2 flex items-center justify-between text-[13px] font-bold">
-            <span className="text-navy">Procesando</span>
-            <span className="tabular-nums text-ink-muted">{pct}%</span>
-          </div>
-          <div className="h-2.5 w-full overflow-hidden rounded-full bg-navy/10">
-            <motion.div
-              className="h-full rounded-full bg-gradient-to-r from-navy to-gold"
-              animate={{ width: `${pct}%` }}
-              transition={{ duration: 0.2, ease: "linear" }}
-            />
-          </div>
-        </div>
-
-        {/* Escáner "leyendo tu documento" */}
-        <DocumentScan name={file.name} />
+        <Console fileName={file.name} fileSize={file.size} phase={phase} pct={pct} />
       </div>
     </div>
   );
@@ -128,7 +113,7 @@ export default function AnalyzingCard() {
 
 function ThinkingEmblem() {
   return (
-    <div className="relative flex h-28 w-28 items-center justify-center">
+    <div className="relative flex h-24 w-24 items-center justify-center">
       <span className="absolute inset-2 rounded-full bg-navy/15 animate-pulse-ring" />
       <span
         className="absolute inset-2 rounded-full bg-gold/25 animate-pulse-ring"
@@ -144,7 +129,7 @@ function ThinkingEmblem() {
         transition={{ duration: 2.6, ease: "linear", repeat: Infinity }}
       />
       <span className="absolute inset-[5px] rounded-full bg-white/90 backdrop-blur-sm" />
-      <BrandMark className="relative h-[68px] w-[68px] rounded-2xl" />
+      <BrandMark className="relative h-[58px] w-[58px] rounded-2xl" />
     </div>
   );
 }
@@ -158,44 +143,132 @@ function Dot({ delay }: { delay: string }) {
   );
 }
 
-/** Anchos (%) de las líneas skeleton que simulan las páginas del documento. */
-const SCAN_LINES = [92, 100, 84, 96, 72, 100, 88, 60];
+/** Consola oscura: monitor de pulso + registro del sistema + telemetría del caso. */
+function Console({
+  fileName,
+  fileSize,
+  phase,
+  pct,
+}: {
+  fileName: string;
+  fileSize: number;
+  phase: number;
+  pct: number;
+}) {
+  const pages = Math.min(30, Math.max(1, Math.round(fileSize / 45_000)));
+  const hechos = Math.round((14 * pct) / 100);
+  const fechas = Math.round((7 * pct) / 100);
+  const pag = Math.max(1, Math.round((pages * Math.min(pct * 1.6, 100)) / 100));
 
-function DocumentScan({ name }: { name: string }) {
+  const visible = ANALYSIS_PHASES.slice(Math.max(0, phase - 2), phase + 1);
+
   return (
-    <div className="relative mt-6 overflow-hidden rounded-2xl border border-navy/10 bg-white/60 p-4">
-      <div className="mb-3 flex items-center gap-2.5">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-navy/[0.06] text-navy">
-          <FileText className="h-5 w-5" strokeWidth={2} />
+    <div className="console-grid mt-6 overflow-hidden rounded-2xl bg-navy-dark p-4 shadow-navy">
+      {/* Cabecera del monitor */}
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex min-w-0 items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-wide text-white/70">
+          <FileText className="h-3.5 w-3.5 shrink-0 text-gold" />
+          <span className="truncate">{fileName}</span>
         </span>
-        <span className="truncate text-[14px] font-bold text-ink">{name}</span>
+        <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-gold">
+          <span className="h-1.5 w-1.5 rounded-full bg-gold animate-blink" />
+          En vivo
+        </span>
       </div>
-      <div className="space-y-2">
-        {SCAN_LINES.map((w, i) => (
-          <div
-            key={i}
-            className="h-2 rounded-full bg-navy/[0.08]"
-            style={{ width: `${w}%` }}
-          />
-        ))}
+
+      {/* Monitor de pulso */}
+      <PulseLine loop className="mt-2 h-10 w-full" />
+
+      <div className="my-3 h-px bg-white/10" />
+
+      {/* Registro del sistema */}
+      <div className="min-h-[66px] space-y-1.5">
+        {visible.map((p, i) => {
+          const isActive = i === visible.length - 1;
+          return isActive ? (
+            <TypedLine key={p.label} text={p.label} />
+          ) : (
+            <p
+              key={p.label}
+              className="flex items-center gap-2 font-mono text-[12px] text-white/45"
+            >
+              <Check className="h-3 w-3 text-gold" strokeWidth={3} />
+              {p.label}
+            </p>
+          );
+        })}
       </div>
-      {/* Línea de escaneo */}
-      <motion.div
-        className="pointer-events-none absolute inset-x-0 h-12"
-        style={{
-          background:
-            "linear-gradient(to bottom, transparent, rgba(255,195,35,0.35), rgba(1,45,106,0.12), transparent)",
-        }}
-        initial={{ top: "-3rem" }}
-        animate={{ top: "100%" }}
-        transition={{ duration: 2.1, ease: "easeInOut", repeat: Infinity }}
-      />
-      <div className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-1.5 rounded-full bg-white/85 px-2.5 py-1 text-[11px] font-bold text-navy shadow-sm">
-        <ScanLine className="h-3.5 w-3.5 text-gold-deep" />
-        Leyendo tu documento
+
+      <div className="my-3 h-px bg-white/10" />
+
+      {/* Telemetría + progreso */}
+      <div className="flex items-center justify-between font-mono text-[11px] font-bold uppercase tracking-wide text-white/55">
+        <span>
+          Hechos <span className="text-gold">{pad(hechos)}</span>
+        </span>
+        <span>
+          Fechas <span className="text-gold">{pad(fechas)}</span>
+        </span>
+        <span>
+          Páginas <span className="text-gold">{pad(pag)}</span>
+        </span>
+        <span className="text-gold">{pad(pct)}%</span>
       </div>
+      <SegmentBar pct={pct} />
     </div>
   );
+}
+
+/** Línea de terminal que se escribe sola, con cursor. */
+function TypedLine({ text }: { text: string }) {
+  const [len, setLen] = useState(0);
+  useEffect(() => {
+    setLen(0);
+    const id = setInterval(() => {
+      setLen((l) => {
+        if (l >= text.length) {
+          clearInterval(id);
+          return l;
+        }
+        return l + 1;
+      });
+    }, 22);
+    return () => clearInterval(id);
+  }, [text]);
+
+  return (
+    <p className="flex items-center gap-2 font-mono text-[12px] font-bold text-white">
+      <span className="text-gold">›</span>
+      {text.slice(0, len)}
+      <span className="h-3.5 w-[7px] bg-gold animate-blink" />
+    </p>
+  );
+}
+
+const SEGMENTS = 26;
+
+function SegmentBar({ pct }: { pct: number }) {
+  const filled = Math.round((pct / 100) * SEGMENTS);
+  return (
+    <div className="mt-2 flex gap-[3px]">
+      {Array.from({ length: SEGMENTS }).map((_, i) => (
+        <span
+          key={i}
+          className={`h-2.5 flex-1 rounded-[2px] transition-colors duration-300 ${
+            i < filled
+              ? i === filled - 1
+                ? "bg-gold animate-blink"
+                : "bg-gold/80"
+              : "bg-white/10"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
 }
 
 function ErrorView({ onRetry, onBack }: { onRetry: () => void; onBack: () => void }) {
@@ -205,7 +278,7 @@ function ErrorView({ onRetry, onBack }: { onRetry: () => void; onBack: () => voi
         <span className="flex h-16 w-16 items-center justify-center rounded-full bg-bad/10 text-bad">
           <AlertTriangle className="h-7 w-7" />
         </span>
-        <h2 className="mt-6 text-[24px] font-bold tracking-tight text-ink">
+        <h2 className="mt-6 font-display text-[24px] font-bold tracking-tight text-ink">
           No pudimos completar el diagnóstico
         </h2>
         <p className="mt-2 text-[16px] text-ink-soft">

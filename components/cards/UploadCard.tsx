@@ -2,7 +2,7 @@
 
 import { useRef, useState, type DragEvent } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, CloudUpload, FileText, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CloudUpload, FileText, X, Check } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import { ACCEPT_ATTR, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 
@@ -50,7 +50,8 @@ export default function UploadCard() {
   return (
     <div className="flex flex-1 flex-col py-4">
       <header className="mb-6">
-        <h2 className="text-[28px] font-bold leading-tight tracking-tight text-ink sm:text-[32px]">
+        <span className="sys-label">Paso 1 · Tu expediente</span>
+        <h2 className="mt-2 font-display text-[28px] font-bold leading-tight tracking-tight text-ink sm:text-[32px]">
           Sube tu caso de asilo
         </h2>
         <p className="mt-2 text-[17px] leading-relaxed text-ink-soft">
@@ -85,22 +86,23 @@ export default function UploadCard() {
             }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
-            className={`flex w-full flex-col items-center justify-center gap-4 rounded-2xl border-[3px] border-dashed px-6 py-12 text-center transition-colors duration-200 ${
-              dragging
-                ? "border-gold bg-gold/10"
-                : "border-navy/20 bg-white/50 hover:border-navy/40 hover:bg-white/80"
+            className={`relative flex w-full flex-col items-center justify-center gap-4 rounded-2xl px-6 py-12 text-center transition-colors duration-200 ${
+              dragging ? "bg-gold/10" : "bg-white/50 hover:bg-white/80"
             }`}
           >
-            <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-navy text-gold shadow-navy">
-              <CloudUpload className="h-8 w-8" strokeWidth={2} />
+            <HudCorners active={dragging} />
+            <span className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-navy text-gold shadow-navy">
+              <span className="absolute inset-0 rounded-2xl bg-navy/25 animate-pulse-ring" />
+              <CloudUpload className="relative h-8 w-8" strokeWidth={2} />
             </span>
             <span className="text-[19px] font-bold text-ink">
               Toca aquí para elegir tu archivo
             </span>
             <span className="text-[14px] font-medium text-ink-muted">
               o arrástralo hasta este recuadro
-              <br />
-              PDF o Word (.docx) · máximo {MAX_FILE_MB} MB
+            </span>
+            <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-navy/45">
+              PDF · DOCX · máx {MAX_FILE_MB} MB
             </span>
           </button>
         )}
@@ -142,6 +144,22 @@ export default function UploadCard() {
   );
 }
 
+/** Esquinas tipo visor/HUD alrededor de la zona de carga. */
+function HudCorners({ active }: { active: boolean }) {
+  const color = active ? "border-gold" : "border-navy/30";
+  const base = "pointer-events-none absolute h-6 w-6 transition-colors duration-200";
+  return (
+    <>
+      <span className={`${base} left-2.5 top-2.5 rounded-tl-lg border-l-[3px] border-t-[3px] ${color}`} />
+      <span className={`${base} right-2.5 top-2.5 rounded-tr-lg border-r-[3px] border-t-[3px] ${color}`} />
+      <span className={`${base} bottom-2.5 left-2.5 rounded-bl-lg border-b-[3px] border-l-[3px] ${color}`} />
+      <span className={`${base} bottom-2.5 right-2.5 rounded-br-lg border-b-[3px] border-r-[3px] ${color}`} />
+    </>
+  );
+}
+
+const CHECKS = ["Formato válido", "Tamaño correcto", "Listo para el análisis"];
+
 function SelectedFile({
   name,
   size,
@@ -152,23 +170,41 @@ function SelectedFile({
   onRemove: () => void;
 }) {
   return (
-    <div className="flex items-center gap-4 rounded-2xl border border-navy/10 bg-white/80 p-5">
-      <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-good/10 text-good">
-        <FileText className="h-7 w-7" strokeWidth={2} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[17px] font-bold text-ink">{name}</p>
-        <p className="mt-0.5 text-[14px] font-medium text-good">
-          Listo para evaluar · {formatSize(size)}
-        </p>
+    <div>
+      <div className="flex items-center gap-4 rounded-2xl border border-navy/10 bg-white/80 p-5">
+        <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-good/10 text-good">
+          <FileText className="h-7 w-7" strokeWidth={2} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[17px] font-bold text-ink">{name}</p>
+          <p className="mt-0.5 font-mono text-[12px] font-bold uppercase tracking-wide text-ink-muted">
+            {formatSize(size)}
+          </p>
+        </div>
+        <button
+          onClick={onRemove}
+          aria-label="Quitar archivo"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-navy/[0.06] text-ink-muted transition-colors hover:bg-bad/10 hover:text-bad"
+        >
+          <X className="h-5 w-5" />
+        </button>
       </div>
-      <button
-        onClick={onRemove}
-        aria-label="Quitar archivo"
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-navy/[0.06] text-ink-muted transition-colors hover:bg-bad/10 hover:text-bad"
-      >
-        <X className="h-5 w-5" />
-      </button>
+
+      {/* Verificación rápida del documento */}
+      <div className="mt-3 flex flex-wrap gap-2">
+        {CHECKS.map((c, i) => (
+          <motion.span
+            key={c}
+            initial={{ opacity: 0, scale: 0.85 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ delay: 0.25 + i * 0.28, type: "spring", stiffness: 300, damping: 20 }}
+            className="inline-flex items-center gap-1.5 rounded-full bg-good/10 px-3 py-1.5 font-mono text-[11px] font-bold uppercase tracking-wide text-good"
+          >
+            <Check className="h-3.5 w-3.5" strokeWidth={3} />
+            {c}
+          </motion.span>
+        ))}
+      </div>
     </div>
   );
 }

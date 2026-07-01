@@ -63,6 +63,36 @@
     @apply inline-flex items-center gap-2 rounded-full border border-navy/10 bg-white/70
       px-4 py-1.5 text-[14px] font-semibold text-navy;
   }
+
+  /* Etiqueta técnica de "sistema" (monoespaciada) */
+  .sys-label {
+    @apply font-mono text-[11px] font-bold uppercase tracking-[0.22em] text-navy/55;
+  }
+}
+
+/* Brillo que recorre el botón primario cada pocos segundos (llama a la acción) */
+.btn-lg {
+  position: relative;
+  overflow: hidden;
+}
+.btn-lg:not(:disabled)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 55%;
+  transform: translateX(-180%) skewX(-18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  animation: btn-sheen 4.2s ease-in-out infinite;
+}
+@keyframes btn-sheen {
+  0% {
+    transform: translateX(-180%) skewX(-18deg);
+  }
+  45%,
+  100% {
+    transform: translateX(320%) skewX(-18deg);
+  }
 }
 
 @layer utilities {
@@ -83,5 +113,34 @@
     transform: translateX(-100%);
     background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
     animation: shimmer 2s infinite;
+  }
+
+  /* Rejilla técnica tipo blueprint, desvanecida hacia los bordes */
+  .blueprint-grid {
+    background-image:
+      linear-gradient(rgba(1, 45, 106, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(1, 45, 106, 0.05) 1px, transparent 1px);
+    background-size: 32px 32px;
+    -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 28%, black, transparent);
+    mask-image: radial-gradient(ellipse 90% 70% at 50% 28%, black, transparent);
+  }
+
+  /* Rejilla fina clara para paneles oscuros (consola) */
+  .console-grid {
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+}
+
+/* Accesibilidad: sin animaciones para quien las desactiva */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { ArrowRight, FileUp, Zap, Lock } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import { BrandMark } from "@/components/Brand";
+import PulseLine from "@/components/ui/PulseLine";
 
 const POINTS = [
   { icon: FileUp, text: "Sube tu caso en PDF o Word" },
@@ -24,10 +25,13 @@ export default function WelcomeCard() {
       >
         <div className="flex flex-col items-center text-center">
           <BrandMark className="h-16 w-16 rounded-2xl" />
-          <span className="pill mt-6">Reforzamiento de asilo · Gratis</span>
-          <h1 className="mt-5 text-balance text-[34px] font-bold leading-[1.08] tracking-tight text-ink sm:text-[40px]">
+          <span className="sys-label mt-6">Reforzamiento de asilo · Gratis</span>
+          <h1 className="mt-4 text-balance font-display text-[34px] font-bold leading-[1.06] tracking-tight text-ink sm:text-[40px]">
             ¿Qué tan sólido es tu caso de asilo?
           </h1>
+
+          <PulseLine className="mt-5 h-8 w-full max-w-[300px]" delay={0.5} />
+
           <p className="mt-4 text-balance text-[18px] leading-relaxed text-ink-soft">
             Sube tu caso y descubre la probabilidad de que un juez lo apruebe — y qué
             puntos debes reforzar antes de tu audiencia.
@@ -40,13 +44,18 @@ export default function WelcomeCard() {
               key={p.text}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.25 + i * 0.1, duration: 0.5 }}
-              className="flex items-center gap-4 rounded-2xl border border-navy/10 bg-white/70 px-5 py-4"
+              transition={{ delay: 0.3 + i * 0.1, duration: 0.5 }}
+              className="flex items-center gap-4 rounded-2xl border border-navy/10 bg-white/70 px-5 py-4 transition-colors hover:border-gold/60 hover:bg-white"
             >
               <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-navy/[0.06] text-navy">
                 <p.icon className="h-[22px] w-[22px]" strokeWidth={2} />
               </span>
-              <span className="text-[16px] font-medium leading-snug text-ink">{p.text}</span>
+              <span className="flex-1 text-[16px] font-medium leading-snug text-ink">
+                {p.text}
+              </span>
+              <span className="font-mono text-[11px] font-bold text-navy/30">
+                0{i + 1}
+              </span>
             </motion.div>
           ))}
         </div>

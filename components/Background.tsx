@@ -1,6 +1,8 @@
 export default function Background() {
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+      {/* Rejilla técnica */}
+      <div className="absolute inset-0 blueprint-grid" />
       {/* Luces de color (azul Utah + dorado) con movimiento sutil */}
       <div className="absolute -left-40 -top-32 h-[38rem] w-[38rem] rounded-full bg-navy/[0.14] blur-3xl animate-glow-drift" />
       <div

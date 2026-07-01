@@ -93,6 +93,23 @@ aprobación → invitación a USA Latino Prime.
       siempre con curl.exe o navegador.
 - [x] Build + typecheck verdes (hay que borrar .next tras eliminar rutas: tipos generados stale)
 
+## DISEÑO v5 — Identidad "consola de diagnóstico" ✅ (2026-07-01)
+Pedido: diseño único, que resalte, super tecnológico, animaciones/loading personalizados.
+- [x] Firma visual: PULSO de electrocardiograma dorado (PulseLine) — se dibuja en welcome,
+      late "EN VIVO" en el análisis, y el emblema de marca lo dibuja en bucle.
+- [x] Tipografía: Space Grotesk (display) + Inter (cuerpo) + JetBrains Mono (etiquetas
+      de sistema: eyebrows, telemetría, %). Clase .sys-label.
+- [x] Fondo: rejilla blueprint desvanecida + auroras navy/dorado.
+- [x] Upload: esquinas HUD en el dropzone (doradas al arrastrar) + chips de verificación
+      animados (formato/tamaño/listo).
+- [x] Loading personalizado: CONSOLA oscura en vivo — nombre del archivo + "EN VIVO"
+      parpadeante, monitor de pulso en bucle, terminal con typewriter y cursor,
+      telemetría (hechos/fechas/páginas) y barra de progreso segmentada dorada.
+- [x] ScoreRing: marcas de calibre alrededor, punto luminoso al final del arco, radar
+      sutil girando detrás (ResultCard).
+- [x] Botón primario con brillo periódico (btn-sheen). prefers-reduced-motion respetado.
+- [x] Probado end-to-end con PDF real (65% media, evaluación real). Build verde.
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.
