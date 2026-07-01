@@ -5,5 +5,5 @@ export const BRAND = {
   company: "USA Latino Prime",
   /** Landing con los servicios profesionales a los que se dirige al usuario. */
   servicesUrl: "https://www.usalatinoprime.com",
-  tagline: "Evalúa la probabilidad de éxito de tu caso de inmigración en EE. UU.",
+  tagline: "Evalúa la probabilidad de que un juez apruebe tu caso de asilo en EE. UU.",
 } as const;

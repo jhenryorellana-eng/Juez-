@@ -1,57 +1,36 @@
 import { create } from "zustand";
-import type { CaseTypeId, InterviewQuestion, Verdict } from "./types";
+import type { Verdict } from "./types";
 
-export type Step = "welcome" | "case" | "interview" | "analyzing" | "verdict";
+export type Step = "welcome" | "upload" | "analyzing" | "verdict";
 
 /** Orden de los pasos, para decidir la dirección del deslizamiento. */
-export const STEP_ORDER: Step[] = [
-  "welcome",
-  "case",
-  "interview",
-  "analyzing",
-  "verdict",
-];
+export const STEP_ORDER: Step[] = ["welcome", "upload", "analyzing", "verdict"];
 
-interface JuezState {
+interface DiagnosticoState {
   step: Step;
-  caseTypeId: CaseTypeId | null;
-  questions: InterviewQuestion[];
-  questionsDemo: boolean;
-  answers: Record<string, string>;
-  story: string;
+  /** Documento del caso elegido por el usuario (solo vive en el cliente). */
+  file: File | null;
   verdict: Verdict | null;
   verdictDemo: boolean;
 
   goTo: (step: Step) => void;
-  selectCase: (id: CaseTypeId) => void;
-  setQuestions: (questions: InterviewQuestion[], demo: boolean) => void;
-  setAnswer: (label: string, value: string) => void;
-  setStory: (value: string) => void;
+  setFile: (file: File | null) => void;
   setVerdict: (verdict: Verdict, demo: boolean) => void;
   reset: () => void;
 }
 
 const initialState = {
   step: "welcome" as Step,
-  caseTypeId: null,
-  questions: [] as InterviewQuestion[],
-  questionsDemo: false,
-  answers: {} as Record<string, string>,
-  story: "",
+  file: null,
   verdict: null,
   verdictDemo: false,
 };
 
-export const useJuez = create<JuezState>((set) => ({
+export const useJuez = create<DiagnosticoState>((set) => ({
   ...initialState,
 
   goTo: (step) => set({ step }),
-  selectCase: (caseTypeId) =>
-    set({ caseTypeId, questions: [], answers: {}, story: "", verdict: null }),
-  setQuestions: (questions, questionsDemo) => set({ questions, questionsDemo }),
-  setAnswer: (label, value) =>
-    set((s) => ({ answers: { ...s.answers, [label]: value } })),
-  setStory: (story) => set({ story }),
+  setFile: (file) => set({ file, verdict: null }),
   setVerdict: (verdict, verdictDemo) => set({ verdict, verdictDemo }),
   reset: () => set({ ...initialState }),
 }));

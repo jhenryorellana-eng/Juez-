@@ -11,9 +11,6 @@ export default function ResultCard() {
 
   if (!verdict) return null;
 
-  const strengths = verdict.strengths.slice(0, 3);
-  const weaknesses = verdict.weaknesses.slice(0, 3);
-
   return (
     <div className="flex flex-1 flex-col space-y-4 py-4">
       {/* Resultado principal */}
@@ -35,25 +32,25 @@ export default function ResultCard() {
         </div>
       </Reveal>
 
-      {/* Puntos clave (conciso) */}
-      {(strengths.length > 0 || weaknesses.length > 0) && (
+      {/* Puntos clave */}
+      {(verdict.strengths.length > 0 || verdict.weaknesses.length > 0) && (
         <Reveal delay={0.1} className="glass space-y-5 p-6">
-          {strengths.length > 0 && (
+          {verdict.strengths.length > 0 && (
             <KeyGroup
               icon={<CheckCircle2 className="h-5 w-5 text-good" />}
               title="A tu favor"
               color="text-good"
               dot="bg-good"
-              items={strengths}
+              items={verdict.strengths}
             />
           )}
-          {weaknesses.length > 0 && (
+          {verdict.weaknesses.length > 0 && (
             <KeyGroup
               icon={<AlertTriangle className="h-5 w-5 text-bad" />}
               title="A reforzar"
               color="text-bad"
               dot="bg-bad"
-              items={weaknesses}
+              items={verdict.weaknesses}
             />
           )}
         </Reveal>
@@ -73,7 +70,7 @@ export default function ResultCard() {
       <Reveal delay={0.28}>
         <button onClick={reset} className="btn-ghost-lg w-full">
           <RotateCcw className="h-5 w-5" />
-          Hacer otro diagnóstico
+          Evaluar otro caso
         </button>
       </Reveal>
     </div>

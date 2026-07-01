@@ -1,8 +1,11 @@
-# Diagnóstico ⚡ — Evalúa tu caso de inmigración con IA
+# Diagnóstico ⚡ — Evalúa tu caso de asilo con IA
 
-App web **mobile-first** (estética clara, elegante y de alta legibilidad) donde una persona
-responde unas preguntas simples sobre su situación migratoria y recibe un **diagnóstico**
-claro de la **probabilidad de éxito** de su caso en EE. UU., generado con IA (Gemini).
+App web **mobile-first** (clara, elegante, de alta legibilidad) para el servicio de
+**reforzamiento de asilo**: la persona **sube su caso** (solicitud I-589, declaración o
+un resumen en PDF/Word), la IA analiza el expediente a fondo y devuelve la
+**probabilidad de que un juez de inmigración lo apruebe**, junto con los puntos
+**a favor** y **a reforzar**. Al final se recomienda el servicio profesional de
+**USA Latino Prime** ([usalatinoprime.com](https://www.usalatinoprime.com)).
 
 Diseñada para ser fácil de usar por **personas mayores**: un paso claro por pantalla,
 texto grande, alto contraste y botones grandes. Parte de la familia de marca **x-legal**.
@@ -11,31 +14,35 @@ texto grande, alto contraste y botones grandes. Parte de la familia de marca **x
 
 ---
 
-## Tipos de caso soportados
-- **Asilo político** — solicitud inicial por persecución.
-- **Reforzamiento de asilo** — fortalecer un caso ya presentado.
-- **Apelación ante la BIA** — apelar una decisión negativa.
-- **Cambio de corte / venue** — trasladar el caso a otra jurisdicción.
+## Flujo
+1. **Bienvenida** → 2. **Sube tu caso** (PDF, .docx o .txt · máx. 15 MB) →
+3. **Análisis inmersivo** (escáner que "lee" el documento, fases y progreso) →
+4. **Diagnóstico** (probabilidad de aprobación, a favor / a reforzar, CTA a USA Latino Prime).
 
-## Diseño
-- **Colores institucionales del Estado de Utah**: azul marino `#012D6A`, dorado `#FFC323`,
-  verde `#1C9253` (alta), dorado (media), rojo `#E51837` (baja).
-- Estética **clara, elegante y minimalista** con glassmorphism, luces de color, sombras
-  suaves y micro-animaciones (Framer Motion). Sin marcos de "maqueta": producto real y
-  responsive que se ve nativo en móvil.
+## Cómo se procesa el documento
+| Formato | Procesamiento |
+|---|---|
+| PDF | Se envía nativo a Gemini (`inlineData`), incluye PDFs escaneados (visión) |
+| .docx | Texto extraído con `mammoth` en el servidor |
+| .txt | Texto directo |
+| .doc antiguo | No compatible — se pide convertir a PDF/.docx |
 
 ## Modelos de IA (Gemini 3.x)
 | Uso | Modelo | Thinking |
 |---|---|---|
-| Diagnóstico (resultado) | `gemini-3.5-flash` | MEDIUM |
-| Preguntas de la entrevista | `gemini-3.1-flash-lite` | MINIMAL |
+| Evaluación del expediente | `gemini-3.5-flash` | MEDIUM |
+| Respaldo si hay sobrecarga (503/429) | `gemini-3.1-flash-lite` | LOW |
 
-Reintentos con backoff ante errores transitorios (503/429) y **fallback a
-`gemini-3.1-flash-lite`** si el modelo principal está sobrecargado, antes del modo demo.
+Reintentos con backoff ante errores transitorios; si todo falla, modo demo local.
+
+## Diseño
+Colores institucionales del Estado de Utah (azul marino `#012D6A`, dorado `#FFC323`,
+verde/dorado/rojo para niveles), glassmorphism, luces de color y micro-animaciones
+(Framer Motion). El momento firma: el escáner que "lee" el documento del usuario.
 
 ## Stack
 Next.js 16 (App Router) · TypeScript · Tailwind CSS v3 · Framer Motion · Zustand ·
-@google/genai (llamadas **solo en el servidor**).
+@google/genai (server-only) · mammoth (.docx).
 
 ## Puesta en marcha (local)
 ```bash
@@ -45,33 +52,26 @@ npm run dev                          # http://localhost:3000
 ```
 
 ## Despliegue en Vercel
-Listo para CI/CD (cada `git push` a `main` redespliega):
-1. En [vercel.com/new](https://vercel.com/new), **importa** el repositorio.
-2. En **Environment Variables**, añade `GEMINI_API_KEY` (Production y Preview).
-3. **Deploy**. Next.js se detecta automáticamente.
+1. En [vercel.com/new](https://vercel.com/new), importa el repositorio.
+2. Añade la variable `GEMINI_API_KEY` (Production y Preview).
+3. Deploy. Cada `git push` a `main` redespliega.
 
 ## Seguridad y notas de producción
-- `GEMINI_API_KEY` solo se usa en el servidor (Route Handlers); nunca llega al cliente.
-  `.env.local` está en `.gitignore`.
-- Sin login ni base de datos (stateless): la historia del usuario **no se guarda**.
-- Rutas API con **rate-limit en memoria** (best-effort). Para límites robustos y
-  compartidos entre instancias serverless, usar **Upstash Redis** o **Vercel KV**.
+- `GEMINI_API_KEY` solo se usa en el servidor; `.env.local` está en `.gitignore`.
+- El documento del usuario **no se guarda**: se procesa en memoria y se descarta.
+- Rate-limit en memoria (6 evaluaciones/min por IP). Para límites compartidos entre
+  instancias serverless, usar Upstash Redis / Vercel KV.
+- Límite de archivo: 15 MB (dentro del límite de 20 MB por solicitud de Gemini).
 
 ## Estructura
 ```
 app/
   layout.tsx · page.tsx (controlador) · globals.css
-  api/interview/questions/route.ts   # gemini-3.1-flash-lite (+ rate-limit + fallback)
-  api/verdict/route.ts               # gemini-3.5-flash (+ rate-limit + fallback)
+  api/evaluate/route.ts   # multipart → PDF nativo o texto → Gemini (+ rate-limit + fallback)
 components/
-  Background · Header · Brand · StepBar
+  Background · Header · Brand · ServicesCTA
   ui/    AnimatedNumber · Reveal · ScoreRing
-  cards/ Welcome · Case · Interview · Analyzing · Result
+  cards/ Welcome · Upload · Analyzing · Result
 lib/
-  brand · types · cases · prompts · gemini · demo · ratelimit · store
+  brand · types · analysis · prompts · gemini · demo · ratelimit · store
 ```
-
-## Flujo
-1. **Bienvenida** → 2. **Tu situación** (tipo de caso) → 3. **Preguntas** (una por
-pantalla + tu historia) → 4. **Analizando** → 5. **Tu diagnóstico** (probabilidad,
-factores, fortalezas/riesgos, recomendaciones y próximos pasos).

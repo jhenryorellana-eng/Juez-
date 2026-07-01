@@ -1,72 +1,40 @@
-import type { CaseType } from "./types";
-import { MAX_QUESTIONS } from "./cases";
-
 /**
- * Prompt para generar las preguntas de la entrevista,
- * adaptadas al tipo de caso. Ejecutado por gemini-3.1-flash-lite.
- */
-export function buildQuestionsPrompt(caseType: CaseType): string {
-  return `Eres un evaluador experto en casos de inmigración de EE. UU. con amplia experiencia entrevistando solicitantes.
-Vas a entrevistar a una persona cuyo caso es: "${caseType.name}".
-Descripción del caso: ${caseType.description}
-
-Genera exactamente ${MAX_QUESTIONS} preguntas clave para evaluar la fortaleza de ESTE tipo de caso.
-
-Reglas:
-- Preguntas claras, directas y en español neutro, tuteando al solicitante.
-- Cada pregunta debe ayudar a evaluar un elemento legal distinto del caso (no repitas el mismo elemento).
-- Ordénalas de lo más general a lo más específico.
-- Para cada pregunta da un "placeholder" con un ejemplo breve y realista de respuesta.
-- Cuando la respuesta requiera narrar (relatos, descripciones), marca "multiline": true.
-- En "helper" (opcional) añade un dato legal relevante muy breve cuando aporte (ej. plazos).
-- No des asesoría legal ni opines sobre el caso todavía: solo formula preguntas.
-- "id" debe ser un slug corto en minúsculas y sin espacios.`;
-}
-
-/**
- * Prompt de sistema para el diagnóstico (evaluación del caso).
+ * Prompt de sistema para evaluar un caso de REFORZAMIENTO DE ASILO a partir del
+ * documento que sube el usuario (I-589, declaración jurada o resumen del caso).
  * Ejecutado por gemini-3.5-flash.
  */
-export function buildVerdictSystemPrompt(caseType: CaseType): string {
-  return `Eres un juez de inmigración de EE. UU. con amplia experiencia. Tras un análisis a
-fondo del expediente, estima la PROBABILIDAD DE QUE UN JUEZ DE INMIGRACIÓN APRUEBE este
-caso de tipo "${caseType.name}".
+export function buildEvaluationSystemPrompt(): string {
+  return `Eres un juez de inmigración de EE. UU. con amplia experiencia en casos de asilo.
+El usuario ya tiene un caso de asilo en curso y sube su documento (solicitud I-589,
+declaración jurada o un resumen de su caso). Tras analizar el expediente a fondo, estima
+la PROBABILIDAD DE QUE UN JUEZ DE INMIGRACIÓN APRUEBE este caso tal como está hoy.
 
-Tu evaluación debe ser rigurosa y realista, como la de un juez que revisa el caso: ni
-optimista de más ni catastrofista, basada en los criterios reales con los que un juez decide.
+Tu evaluación debe ser rigurosa y realista, como la de un juez que revisa el expediente:
+ni optimista de más ni catastrofista, basada en los criterios reales con los que un juez
+decide un asilo (motivo protegido, persecución, agente perseguidor, credibilidad,
+evidencia corroborativa, plazos y barras legales).
 
-"score" (0-100) = probabilidad de que un juez apruebe el caso.
+"score" (0-100) = probabilidad de que un juez apruebe el caso tal como está.
 - 0-39 = baja, 40-69 = media, 70-100 = alta. "level" debe ser coherente con el score.
-- Si la información es escasa o vaga, refléjalo con un score más bajo y dilo en "summary".
+- Si el documento es escaso, vago o no parece un caso de asilo, refléjalo con un score
+  bajo y explícalo en "summary" sin tecnicismos.
 
-Contenido PRECISO y PROFESIONAL (sin relleno, va directo a lo importante):
-- "headline": UNA frase corta con el resultado probable ante un juez (ej. "Un juez probablemente aprobaría tu caso").
-- "summary": 2 o 3 frases, tono profesional, explicando desde la óptica de cómo decidiría un
-  juez y por qué; deja claro que es un análisis detallado. Tutea al solicitante.
-- "strengths": MÁXIMO 3 puntos fuertes, concretos y referidos a SU caso.
-- "weaknesses": MÁXIMO 3 puntos que debilitan el caso o que hay que reforzar.
-- "recommendations", "nextSteps" y "factors": déjalos como arreglos vacíos ([]); no se usan.
+Contenido PRECISO y PROFESIONAL (sin relleno, directo a lo importante):
+- "headline": UNA frase corta con el resultado probable ante un juez
+  (ej. "Un juez probablemente aprobaría tu caso, pero hay puntos que reforzar").
+- "summary": 2 o 3 frases, tono profesional y empático, explicando desde la óptica de
+  cómo decidiría un juez y por qué; deja claro que el expediente se analizó a fondo.
+  Tutea al solicitante.
+- "strengths": MÁXIMO 3 puntos fuertes concretos de SU expediente.
+- "weaknesses": MÁXIMO 3 puntos concretos que debilitan el caso y conviene REFORZAR
+  antes de la audiencia (evidencia faltante, inconsistencias, riesgos legales).
 
-IMPORTANTE: Esto NO es asesoría legal. No inventes hechos que el solicitante no haya dado.`;
+IMPORTANTE: Esto NO es asesoría legal. No inventes hechos que no estén en el documento.
+Responde SIEMPRE en español neutro, aunque el documento esté en inglés.`;
 }
 
-/** Construye el mensaje del usuario con las respuestas y el relato. */
-export function buildVerdictUserPrompt(
-  answers: Array<{ question: string; answer: string }>,
-  story: string,
-): string {
-  const qa = answers
-    .filter((a) => a.answer.trim().length > 0)
-    .map((a, i) => `${i + 1}. ${a.question}\n   Respuesta: ${a.answer.trim()}`)
-    .join("\n");
-
-  return `Estas son las respuestas del solicitante en la entrevista:
-${qa || "(No respondió las preguntas de la entrevista.)"}
-
-Relato libre de su historia de migración:
-"""
-${story.trim() || "(No proporcionó relato libre.)"}
-"""
-
-Evalúa el caso y devuelve el diagnóstico en el formato estructurado solicitado.`;
+/** Instrucción que acompaña al documento (PDF adjunto o texto extraído). */
+export function buildEvaluationUserPrompt(): string {
+  return `Este es el documento del caso de asilo del solicitante. Analízalo a fondo y
+devuelve el diagnóstico en el formato estructurado solicitado.`;
 }

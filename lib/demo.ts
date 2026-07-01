@@ -1,81 +1,37 @@
-import type { CaseType, Verdict } from "./types";
+import type { Verdict } from "./types";
 
 /**
- * Veredicto de respaldo (modo demo) cuando no hay GEMINI_API_KEY o falla la IA.
- * El score se deriva del nivel de detalle aportado para que se sienta responsivo,
- * pero NO sustituye una evaluación real.
+ * Resultado de respaldo (modo demo) cuando no hay GEMINI_API_KEY o la IA falla
+ * por completo. El score se deriva del tamaño del contenido para que se sienta
+ * responsivo, pero NO sustituye una evaluación real.
  */
-export function buildDemoVerdict(
-  caseType: CaseType,
-  answers: Array<{ question: string; answer: string }>,
-  story: string,
-): Verdict {
-  const detail = scoreDetail(answers, story);
-  const score = clamp(34 + Math.round(detail * 46), 18, 88);
+export function buildDemoVerdict(contentLength: number): Verdict {
+  const detail = Math.min(contentLength / 8000, 1);
+  const score = clamp(30 + Math.round(detail * 45), 22, 78);
   const level: Verdict["level"] =
     score >= 70 ? "alto" : score >= 40 ? "moderado" : "bajo";
 
   return {
     score,
     level,
-    headline: `Análisis preliminar de tu caso de ${caseType.shortName.toLowerCase()}`,
+    headline: "Análisis preliminar de tu caso de asilo",
     summary:
       "Esta es una evaluación de demostración generada localmente (sin conexión a la IA). " +
-      "Refleja el nivel de detalle que aportaste, no un análisis legal real. " +
-      "Configura tu GEMINI_API_KEY para obtener el diagnóstico completo con IA.",
+      "Refleja el volumen de información de tu documento, no un análisis real del expediente. " +
+      "Configura la GEMINI_API_KEY para obtener el diagnóstico completo.",
     strengths: [
+      "Tu caso ya está documentado por escrito, un requisito básico para reforzarlo.",
       detail > 0.5
-        ? "Aportaste un relato con buen nivel de detalle, lo que suele ayudar a la credibilidad."
-        : "Identificaste el tipo de caso correctamente, un primer paso necesario.",
-      "Estás documentando tu historia de forma estructurada y ordenada.",
+        ? "El documento tiene un volumen de detalle razonable para ser evaluado."
+        : "Diste el primer paso: poner tu caso en un documento evaluable.",
     ],
     weaknesses: [
       detail < 0.5
-        ? "La información es todavía escasa; se necesitarían más detalles concretos."
-        : "Falta confirmar la evidencia documental que respalde cada afirmación.",
-      "No se ha verificado el cumplimiento de plazos legales aplicables a tu caso.",
-    ],
-    recommendations: [
-      "Reúne y organiza toda la evidencia documental (reportes, denuncias, cartas, registros).",
-      "Anota fechas exactas: pueden ser decisivas para los plazos legales.",
-      "Consulta con un abogado de inmigración licenciado antes de cualquier presentación.",
-    ],
-    nextSteps: [
-      "Configura la API de Gemini para recibir el diagnóstico real con IA.",
-      "Prepara una línea de tiempo clara de los hechos.",
-      "Identifica posibles testigos o expertos que respalden tu caso.",
-    ],
-    factors: [
-      {
-        factor: "Detalle del relato",
-        impact: detail > 0.5 ? "positivo" : "negativo",
-        detail:
-          detail > 0.5
-            ? "Tu historia incluye elementos concretos y específicos."
-            : "Tu historia necesita más concreción y ejemplos.",
-      },
-      {
-        factor: "Evidencia de respaldo",
-        impact: "neutral",
-        detail: "Aún no se ha evaluado la solidez de la evidencia documental.",
-      },
-      {
-        factor: "Cumplimiento de plazos",
-        impact: "neutral",
-        detail: "Los plazos legales no han sido verificados en este modo demo.",
-      },
+        ? "El documento es breve; un expediente sólido suele requerir más detalle y evidencia."
+        : "Falta verificar que cada afirmación esté respaldada con evidencia corroborativa.",
+      "No se han verificado plazos ni barras legales aplicables en este modo demo.",
     ],
   };
-}
-
-function scoreDetail(
-  answers: Array<{ question: string; answer: string }>,
-  story: string,
-): number {
-  const answered = answers.filter((a) => a.answer.trim().length > 12).length;
-  const answerRatio = answers.length > 0 ? answered / answers.length : 0;
-  const storyScore = Math.min(story.trim().length / 600, 1);
-  return clamp(answerRatio * 0.55 + storyScore * 0.45, 0, 1);
 }
 
 function clamp(n: number, min: number, max: number): number {

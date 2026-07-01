@@ -6,15 +6,13 @@ import { useJuez, STEP_ORDER, type Step } from "@/lib/store";
 import Background from "@/components/Background";
 import Header from "@/components/Header";
 import WelcomeCard from "@/components/cards/WelcomeCard";
-import CaseCard from "@/components/cards/CaseCard";
-import InterviewCard from "@/components/cards/InterviewCard";
+import UploadCard from "@/components/cards/UploadCard";
 import AnalyzingCard from "@/components/cards/AnalyzingCard";
 import ResultCard from "@/components/cards/ResultCard";
 
 const COMPONENTS: Record<Step, ComponentType> = {
   welcome: WelcomeCard,
-  case: CaseCard,
-  interview: InterviewCard,
+  upload: UploadCard,
   analyzing: AnalyzingCard,
   verdict: ResultCard,
 };

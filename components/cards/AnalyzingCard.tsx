@@ -2,14 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { animate, AnimatePresence, motion } from "framer-motion";
-import { Loader2, AlertTriangle, ScanLine } from "lucide-react";
+import { Loader2, AlertTriangle, ScanLine, FileText } from "lucide-react";
 import { useJuez } from "@/lib/store";
-import { ANALYSIS_PHASES, MIN_ANALYSIS_MS } from "@/lib/cases";
+import { ANALYSIS_PHASES, MIN_ANALYSIS_MS } from "@/lib/analysis";
 import { BrandMark } from "@/components/Brand";
 import type { VerdictResponse } from "@/lib/types";
 
 export default function AnalyzingCard() {
-  const { caseTypeId, answers, story, setVerdict, goTo } = useJuez();
+  const { file, setVerdict, goTo } = useJuez();
   const [phase, setPhase] = useState(0);
   const [pct, setPct] = useState(0);
   const [error, setError] = useState(false);
@@ -17,6 +17,10 @@ export default function AnalyzingCard() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    if (!file) {
+      goTo("upload");
+      return;
+    }
     let cancelled = false;
     setError(false);
     setPhase(0);
@@ -36,11 +40,9 @@ export default function AnalyzingCard() {
     async function run() {
       const minDelay = new Promise((r) => setTimeout(r, MIN_ANALYSIS_MS));
       try {
-        const res = await fetch("/api/verdict", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ caseTypeId, answers, story }),
-        });
+        const body = new FormData();
+        body.append("file", file as File);
+        const res = await fetch("/api/evaluate", { method: "POST", body });
         if (!res.ok) throw new Error("request_failed");
         const data = (await res.json()) as VerdictResponse;
         await minDelay;
@@ -61,8 +63,10 @@ export default function AnalyzingCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt]);
 
+  if (!file) return null;
+
   if (error) {
-    return <ErrorView onRetry={() => setAttempt((a) => a + 1)} onBack={() => goTo("interview")} />;
+    return <ErrorView onRetry={() => setAttempt((a) => a + 1)} onBack={() => goTo("upload")} />;
   }
 
   const active = ANALYSIS_PHASES[phase];
@@ -79,7 +83,7 @@ export default function AnalyzingCard() {
               <Dot delay="0.15s" />
               <Dot delay="0.3s" />
             </span>
-            Analizando tu caso
+            Analizando tu expediente
           </span>
 
           <div className="mt-5 min-h-[62px]">
@@ -115,8 +119,8 @@ export default function AnalyzingCard() {
           </div>
         </div>
 
-        {/* Escáner "leyendo tu caso" */}
-        <ScanPanel story={story} />
+        {/* Escáner "leyendo tu documento" */}
+        <DocumentScan name={file.name} />
       </div>
     </div>
   );
@@ -130,7 +134,6 @@ function ThinkingEmblem() {
         className="absolute inset-2 rounded-full bg-gold/25 animate-pulse-ring"
         style={{ animationDelay: "0.9s" }}
       />
-      {/* Anillo giratorio (gradiente cónico) */}
       <motion.span
         className="absolute inset-0 rounded-full"
         style={{
@@ -155,30 +158,41 @@ function Dot({ delay }: { delay: string }) {
   );
 }
 
-function ScanPanel({ story }: { story: string }) {
-  const text =
-    story.trim().length > 0
-      ? story.trim()
-      : "Leyendo tu historia y cada dato que compartiste para evaluar tu caso…";
+/** Anchos (%) de las líneas skeleton que simulan las páginas del documento. */
+const SCAN_LINES = [92, 100, 84, 96, 72, 100, 88, 60];
+
+function DocumentScan({ name }: { name: string }) {
   return (
-    <div className="relative mt-6 h-[132px] overflow-hidden rounded-2xl border border-navy/10 bg-white/60 p-4">
-      <p className="select-none text-[12.5px] leading-relaxed text-ink/45 [mask-image:linear-gradient(to_bottom,transparent,#000_18%,#000_82%,transparent)]">
-        {text}
-      </p>
+    <div className="relative mt-6 overflow-hidden rounded-2xl border border-navy/10 bg-white/60 p-4">
+      <div className="mb-3 flex items-center gap-2.5">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-navy/[0.06] text-navy">
+          <FileText className="h-5 w-5" strokeWidth={2} />
+        </span>
+        <span className="truncate text-[14px] font-bold text-ink">{name}</span>
+      </div>
+      <div className="space-y-2">
+        {SCAN_LINES.map((w, i) => (
+          <div
+            key={i}
+            className="h-2 rounded-full bg-navy/[0.08]"
+            style={{ width: `${w}%` }}
+          />
+        ))}
+      </div>
       {/* Línea de escaneo */}
       <motion.div
-        className="pointer-events-none absolute inset-x-0 h-10"
+        className="pointer-events-none absolute inset-x-0 h-12"
         style={{
           background:
             "linear-gradient(to bottom, transparent, rgba(255,195,35,0.35), rgba(1,45,106,0.12), transparent)",
         }}
-        initial={{ top: "-2.5rem" }}
-        animate={{ top: "132px" }}
-        transition={{ duration: 1.9, ease: "easeInOut", repeat: Infinity }}
+        initial={{ top: "-3rem" }}
+        animate={{ top: "100%" }}
+        transition={{ duration: 2.1, ease: "easeInOut", repeat: Infinity }}
       />
-      <div className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-1.5 rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-bold text-navy shadow-sm">
+      <div className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-1.5 rounded-full bg-white/85 px-2.5 py-1 text-[11px] font-bold text-navy shadow-sm">
         <ScanLine className="h-3.5 w-3.5 text-gold-deep" />
-        Leyendo tu caso
+        Leyendo tu documento
       </div>
     </div>
   );
@@ -194,7 +208,9 @@ function ErrorView({ onRetry, onBack }: { onRetry: () => void; onBack: () => voi
         <h2 className="mt-6 text-[24px] font-bold tracking-tight text-ink">
           No pudimos completar el diagnóstico
         </h2>
-        <p className="mt-2 text-[16px] text-ink-soft">Hubo un problema al procesar tu caso.</p>
+        <p className="mt-2 text-[16px] text-ink-soft">
+          Hubo un problema al procesar tu documento.
+        </p>
         <div className="mt-7 w-full space-y-3">
           <button onClick={onRetry} className="btn-lg">
             <Loader2 className="h-5 w-5" />

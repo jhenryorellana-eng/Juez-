@@ -1,14 +1,14 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { ArrowRight, MessagesSquare, Zap, Lock } from "lucide-react";
+import { ArrowRight, FileUp, Zap, Lock } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import { BrandMark } from "@/components/Brand";
 
 const POINTS = [
-  { icon: MessagesSquare, text: "Respondes unas preguntas simples, una por una" },
-  { icon: Zap, text: "Recibes tu diagnóstico al instante" },
-  { icon: Lock, text: "Privado y gratis · no necesitas cuenta" },
+  { icon: FileUp, text: "Sube tu caso en PDF o Word" },
+  { icon: Zap, text: "La IA analiza tu expediente a fondo" },
+  { icon: Lock, text: "Privado y gratis · tu documento no se guarda" },
 ];
 
 export default function WelcomeCard() {
@@ -24,13 +24,13 @@ export default function WelcomeCard() {
       >
         <div className="flex flex-col items-center text-center">
           <BrandMark className="h-16 w-16 rounded-2xl" />
-          <span className="pill mt-6">Evaluación gratuita · 3 minutos</span>
+          <span className="pill mt-6">Reforzamiento de asilo · Gratis</span>
           <h1 className="mt-5 text-balance text-[34px] font-bold leading-[1.08] tracking-tight text-ink sm:text-[40px]">
-            Conoce las probabilidades de tu caso de inmigración
+            ¿Qué tan sólido es tu caso de asilo?
           </h1>
           <p className="mt-4 text-balance text-[18px] leading-relaxed text-ink-soft">
-            Cuéntanos tu situación y recibe un diagnóstico claro de qué tan probable es que
-            tu caso tenga éxito en EE. UU.
+            Sube tu caso y descubre la probabilidad de que un juez lo apruebe — y qué
+            puntos debes reforzar antes de tu audiencia.
           </p>
         </div>
 
@@ -51,8 +51,8 @@ export default function WelcomeCard() {
           ))}
         </div>
 
-        <button onClick={() => goTo("case")} className="btn-lg mt-8">
-          Comenzar
+        <button onClick={() => goTo("upload")} className="btn-lg mt-8">
+          Evaluar mi caso
           <ArrowRight className="h-5 w-5" />
         </button>
       </motion.div>

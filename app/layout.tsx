@@ -9,9 +9,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Diagnóstico — Evalúa tu caso de inmigración",
+  title: "Diagnóstico — Evalúa tu caso de asilo",
   description:
-    "Responde unas preguntas y recibe un diagnóstico claro de la probabilidad de éxito de tu caso de inmigración en EE. UU.",
+    "Sube tu caso de asilo y recibe un diagnóstico claro de la probabilidad de que un juez lo apruebe — y qué debes reforzar.",
 };
 
 export const viewport: Viewport = {

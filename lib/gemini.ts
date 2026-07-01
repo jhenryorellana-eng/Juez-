@@ -1,20 +1,13 @@
 import { GoogleGenAI, Type, ThinkingLevel } from "@google/genai";
-import type { Schema } from "@google/genai";
-import type { CaseType, InterviewQuestion, Verdict } from "./types";
-import { MAX_QUESTIONS } from "./cases";
-import {
-  buildQuestionsPrompt,
-  buildVerdictSystemPrompt,
-  buildVerdictUserPrompt,
-} from "./prompts";
+import type { Schema, ContentListUnion } from "@google/genai";
+import type { Verdict } from "./types";
+import { buildEvaluationSystemPrompt, buildEvaluationUserPrompt } from "./prompts";
 
 /** Modelos elegidos según la página de precios de Gemini (solo 3.x). */
 export const MODELS = {
-  /** Entrevista: rápido y económico. */
-  interview: "gemini-3.1-flash-lite",
-  /** Veredicto: el más inteligente, para el razonamiento legal. */
+  /** Evaluación del caso: el más inteligente, para el razonamiento del expediente. */
   judge: "gemini-3.5-flash",
-  /** Respaldo del veredicto si el modelo principal está sobrecargado (503/429). */
+  /** Respaldo si el modelo principal está sobrecargado (503/429). Sigue siendo IA real. */
   judgeFallback: "gemini-3.1-flash-lite",
 } as const;
 
@@ -42,7 +35,7 @@ function sleep(ms: number): Promise<void> {
 
 interface GenParams {
   model: string;
-  contents: string;
+  contents: ContentListUnion;
   config: Record<string, unknown>;
   retries?: number;
 }
@@ -69,27 +62,6 @@ async function generateJson<T>({ model, contents, config, retries = 2 }: GenPara
   throw lastErr;
 }
 
-const QUESTIONS_SCHEMA: Schema = {
-  type: Type.OBJECT,
-  properties: {
-    questions: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          id: { type: Type.STRING },
-          label: { type: Type.STRING },
-          placeholder: { type: Type.STRING },
-          helper: { type: Type.STRING },
-          multiline: { type: Type.BOOLEAN },
-        },
-        required: ["id", "label", "placeholder"],
-      },
-    },
-  },
-  required: ["questions"],
-};
-
 const VERDICT_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
@@ -99,67 +71,37 @@ const VERDICT_SCHEMA: Schema = {
     summary: { type: Type.STRING },
     strengths: { type: Type.ARRAY, items: { type: Type.STRING } },
     weaknesses: { type: Type.ARRAY, items: { type: Type.STRING } },
-    recommendations: { type: Type.ARRAY, items: { type: Type.STRING } },
-    nextSteps: { type: Type.ARRAY, items: { type: Type.STRING } },
-    factors: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          factor: { type: Type.STRING },
-          impact: { type: Type.STRING, enum: ["positivo", "negativo", "neutral"] },
-          detail: { type: Type.STRING },
-        },
-        required: ["factor", "impact", "detail"],
-      },
-    },
   },
-  required: [
-    "score",
-    "level",
-    "headline",
-    "summary",
-    "strengths",
-    "weaknesses",
-    "recommendations",
-    "nextSteps",
-    "factors",
-  ],
+  required: ["score", "level", "headline", "summary", "strengths", "weaknesses"],
 };
 
-/** Genera las preguntas de la entrevista con gemini-3.1-flash-lite. */
-export async function generateQuestions(
-  caseType: CaseType,
-): Promise<InterviewQuestion[]> {
-  const parsed = await generateJson<{ questions?: InterviewQuestion[] }>({
-    model: MODELS.interview,
-    contents: buildQuestionsPrompt(caseType),
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: QUESTIONS_SCHEMA,
-      temperature: 0.7,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
-    },
-    retries: 2,
-  });
+/** Documento del caso: PDF (bytes en base64) o texto ya extraído (.docx/.txt). */
+export type CaseDocument =
+  | { kind: "pdf"; base64: string }
+  | { kind: "text"; text: string };
 
-  const questions = parsed.questions ?? [];
-  if (questions.length === 0) throw new Error("EMPTY_QUESTIONS");
-  return questions.slice(0, MAX_QUESTIONS);
-}
+/**
+ * Evalúa el caso de reforzamiento de asilo a partir del documento.
+ * Usa gemini-3.5-flash; si está sobrecargado, cae a gemini-3.1-flash-lite.
+ */
+export async function evaluateCase(doc: CaseDocument): Promise<Verdict> {
+  const contents: ContentListUnion =
+    doc.kind === "pdf"
+      ? [
+          { inlineData: { mimeType: "application/pdf", data: doc.base64 } },
+          { text: buildEvaluationUserPrompt() },
+        ]
+      : [
+          {
+            text: `${buildEvaluationUserPrompt()}\n\nContenido del documento:\n"""\n${doc.text}\n"""`,
+          },
+        ];
 
-/** Emite el veredicto. Usa 3.5-flash; si está sobrecargado, cae a 3.1-flash-lite (IA real). */
-export async function generateVerdict(
-  caseType: CaseType,
-  answers: Array<{ question: string; answer: string }>,
-  story: string,
-): Promise<Verdict> {
-  const contents = buildVerdictUserPrompt(answers, story);
   const baseConfig = {
-    systemInstruction: buildVerdictSystemPrompt(caseType),
+    systemInstruction: buildEvaluationSystemPrompt(),
     responseMimeType: "application/json",
     responseSchema: VERDICT_SCHEMA,
-    temperature: 0.5,
+    temperature: 0.4,
   };
 
   try {
@@ -172,7 +114,6 @@ export async function generateVerdict(
     return normalizeVerdict(verdict);
   } catch (err) {
     if (!isRetryable(err)) throw err;
-    // El modelo principal sigue sobrecargado: usamos el de respaldo (sigue siendo IA real).
     const verdict = await generateJson<Verdict>({
       model: MODELS.judgeFallback,
       contents,
@@ -183,19 +124,16 @@ export async function generateVerdict(
   }
 }
 
-/** Asegura que el veredicto tenga valores coherentes y seguros. */
+/** Asegura que el resultado tenga valores coherentes y seguros. */
 function normalizeVerdict(v: Verdict): Verdict {
   const score = clamp(Math.round(Number(v.score) || 0), 0, 100);
   return {
     score,
     level: levelFromScore(score),
-    headline: v.headline ?? "Evaluación del caso",
+    headline: v.headline ?? "Evaluación de tu caso",
     summary: v.summary ?? "",
-    strengths: v.strengths ?? [],
-    weaknesses: v.weaknesses ?? [],
-    recommendations: v.recommendations ?? [],
-    nextSteps: v.nextSteps ?? [],
-    factors: v.factors ?? [],
+    strengths: (v.strengths ?? []).slice(0, 3),
+    weaknesses: (v.weaknesses ?? []).slice(0, 3),
   };
 }
 

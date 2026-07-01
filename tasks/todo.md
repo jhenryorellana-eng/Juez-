@@ -77,6 +77,22 @@ Motivo: rechazo del marco de celular y de la marca legal. Ver tasks/lessons.md.
 - [x] Build + typecheck verdes. Probado end-to-end con Playwright (móvil): diagnóstico real 82% asilo.
 - [x] README y marca actualizados.
 
+## PIVOTE v4 — Solo "Reforzamiento de asilo" + subida de documento ✅
+Decisión del usuario (2026-07-01): el sistema deja de ser multi-caso con entrevista.
+Ahora: el usuario SUBE su caso (PDF o Word) → la IA lo evalúa → probabilidad de
+aprobación → invitación a USA Latino Prime.
+- [x] Flujo nuevo: welcome → upload → analyzing → verdict (sin selección de caso ni entrevista)
+- [x] UploadCard: dropzone grande (PDF/.docx/.txt, máx. 15 MB), drag&drop + validación clara
+- [x] API /api/evaluate (multipart): PDF → Gemini nativo (inlineData); .docx → mammoth → texto
+- [x] Prompt: óptica de juez para reforzamiento de asilo (doc = I-589/declaración/resumen)
+- [x] Limpiar: rutas de preguntas/veredicto viejas, CaseCard/InterviewCard/StepBar, lib/cases
+- [x] AnalyzingCard: escáner "lee el documento" (nombre + líneas skeleton + beam dorado)
+- [x] Probado end-to-end con PDF real (Playwright): 62% media, la IA detectó exactamente
+      las debilidades escritas en el documento (fechas inconsistentes, tránsito por Colombia).
+      Nota: multipart de PowerShell (-Form) no es compatible con formData() de Next; probar
+      siempre con curl.exe o navegador.
+- [x] Build + typecheck verdes (hay que borrar .next tras eliminar rutas: tipos generados stale)
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.
