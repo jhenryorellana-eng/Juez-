@@ -43,7 +43,7 @@ export function getCaseType(id: CaseTypeId): CaseType | undefined {
 export const MAX_QUESTIONS = 6;
 
 /** Tiempo mínimo (ms) que dura la animación del análisis para que se sienta la experiencia. */
-export const MIN_ANALYSIS_MS = 4200;
+export const MIN_ANALYSIS_MS = 7600;
 
 export interface AnalysisPhase {
   label: string;
@@ -51,11 +51,13 @@ export interface AnalysisPhase {
 }
 
 export const ANALYSIS_PHASES: AnalysisPhase[] = [
-  { label: "Revisando tu información", detail: "Leyendo cada detalle de tu historia" },
-  { label: "Evaluando la solidez", detail: "Consistencia y coherencia de tu caso" },
-  { label: "Comparando con casos similares", detail: "Patrones de situaciones parecidas" },
+  { label: "Leyendo tu historia", detail: "Procesando cada detalle de tu relato" },
+  { label: "Identificando los hechos clave", detail: "Fechas, lugares y personas involucradas" },
+  { label: "Evaluando la solidez de tu caso", detail: "Consistencia y coherencia de tu situación" },
+  { label: "Revisando tu evidencia", detail: "Qué respalda cada parte de tu caso" },
+  { label: "Comparando con casos similares", detail: "Miles de situaciones parecidas" },
   { label: "Calculando probabilidades", detail: "Estimando tus posibilidades de éxito" },
-  { label: "Preparando tu diagnóstico", detail: "Redactando el resultado final" },
+  { label: "Preparando tu diagnóstico", detail: "Redactando tu resultado personalizado" },
 ];
 
 /**

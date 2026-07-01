@@ -5,6 +5,7 @@ import { useJuez } from "@/lib/store";
 import { getCaseType } from "@/lib/cases";
 import Reveal from "@/components/ui/Reveal";
 import ScoreRing from "@/components/ui/ScoreRing";
+import ServicesCTA from "@/components/ServicesCTA";
 import type { FactorImpact, VerdictFactor } from "@/lib/types";
 
 const IMPACT: Record<FactorImpact, { dot: string; label: string; color: string }> = {
@@ -88,13 +89,17 @@ export default function ResultCard() {
       )}
 
       <Reveal delay={0.28}>
+        <ServicesCTA />
+      </Reveal>
+
+      <Reveal delay={0.32}>
         <p className="px-3 text-center text-[13px] leading-relaxed text-ink-muted">
           Este diagnóstico es informativo y no sustituye la orientación de un profesional.
         </p>
       </Reveal>
 
-      <Reveal delay={0.32}>
-        <button onClick={reset} className="btn-lg">
+      <Reveal delay={0.36}>
+        <button onClick={reset} className="btn-ghost-lg w-full">
           <RotateCcw className="h-5 w-5" />
           Hacer otro diagnóstico
         </button>

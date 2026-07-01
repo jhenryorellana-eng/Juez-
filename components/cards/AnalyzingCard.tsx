@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { Check, Loader2, AlertTriangle } from "lucide-react";
+import { animate, AnimatePresence, motion } from "framer-motion";
+import { Loader2, AlertTriangle, ScanLine } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import { ANALYSIS_PHASES, MIN_ANALYSIS_MS } from "@/lib/cases";
 import { BrandMark } from "@/components/Brand";
@@ -11,6 +11,7 @@ import type { VerdictResponse } from "@/lib/types";
 export default function AnalyzingCard() {
   const { caseTypeId, answers, story, setVerdict, goTo } = useJuez();
   const [phase, setPhase] = useState(0);
+  const [pct, setPct] = useState(0);
   const [error, setError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -19,11 +20,18 @@ export default function AnalyzingCard() {
     let cancelled = false;
     setError(false);
     setPhase(0);
+    setPct(0);
 
     const stepMs = MIN_ANALYSIS_MS / ANALYSIS_PHASES.length;
     intervalRef.current = setInterval(() => {
       setPhase((p) => Math.min(p + 1, ANALYSIS_PHASES.length - 1));
     }, stepMs);
+
+    const counter = animate(0, 99, {
+      duration: MIN_ANALYSIS_MS / 1000,
+      ease: [0.4, 0, 0.2, 1],
+      onUpdate: (v) => setPct(Math.round(v)),
+    });
 
     async function run() {
       const minDelay = new Promise((r) => setTimeout(r, MIN_ANALYSIS_MS));
@@ -47,6 +55,7 @@ export default function AnalyzingCard() {
 
     return () => {
       cancelled = true;
+      counter.stop();
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,70 +69,116 @@ export default function AnalyzingCard() {
 
   return (
     <div className="flex flex-1 flex-col justify-center py-4">
-      <div className="glass p-7 sm:p-9">
+      <div className="glass p-7 sm:p-8">
         <div className="flex flex-col items-center text-center">
-          <div className="relative mb-7 flex h-24 w-24 items-center justify-center">
-            <span className="absolute inset-0 rounded-full bg-navy/20 animate-pulse-ring" />
-            <span
-              className="absolute inset-0 rounded-full bg-gold/25 animate-pulse-ring"
-              style={{ animationDelay: "0.8s" }}
-            />
-            <BrandMark className="h-[76px] w-[76px] rounded-2xl" />
-          </div>
+          <ThinkingEmblem />
 
-          <span className="pill mb-5">
-            <Loader2 className="h-4 w-4 animate-spin text-gold-deep" />
+          <span className="pill mt-7">
+            <span className="flex gap-1">
+              <Dot delay="0s" />
+              <Dot delay="0.15s" />
+              <Dot delay="0.3s" />
+            </span>
             Analizando tu caso
           </span>
 
-          <div className="min-h-[64px]">
+          <div className="mt-5 min-h-[62px]">
             <AnimatePresence mode="wait">
               <motion.div
                 key={phase}
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.35 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.4 }}
               >
-                <h2 className="text-[24px] font-bold tracking-tight text-ink">{active.label}</h2>
-                <p className="mt-1.5 text-[16px] text-ink-muted">{active.detail}</p>
+                <h2 className="text-[23px] font-bold tracking-tight text-ink sm:text-[25px]">
+                  {active.label}
+                </h2>
+                <p className="mt-1.5 text-[15px] text-ink-muted">{active.detail}</p>
               </motion.div>
             </AnimatePresence>
           </div>
         </div>
 
-        <div className="mt-8 space-y-2.5">
-          {ANALYSIS_PHASES.map((p, i) => {
-            const state = i < phase ? "done" : i === phase ? "active" : "todo";
-            return (
-              <div
-                key={p.label}
-                className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-[16px] transition-colors duration-500 ${
-                  state === "todo" ? "text-ink-faint" : "bg-white/70 text-ink"
-                }`}
-              >
-                <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
-                    state === "done"
-                      ? "bg-good text-white"
-                      : state === "active"
-                        ? "bg-gold/25 text-gold-deep"
-                        : "bg-navy/10 text-ink-faint"
-                  }`}
-                >
-                  {state === "done" ? (
-                    <Check className="h-3.5 w-3.5" strokeWidth={3} />
-                  ) : state === "active" ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                  )}
-                </span>
-                <span className="font-medium">{p.label}</span>
-              </div>
-            );
-          })}
+        {/* Progreso */}
+        <div className="mt-6">
+          <div className="mb-2 flex items-center justify-between text-[13px] font-bold">
+            <span className="text-navy">Procesando</span>
+            <span className="tabular-nums text-ink-muted">{pct}%</span>
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-navy/10">
+            <motion.div
+              className="h-full rounded-full bg-gradient-to-r from-navy to-gold"
+              animate={{ width: `${pct}%` }}
+              transition={{ duration: 0.2, ease: "linear" }}
+            />
+          </div>
         </div>
+
+        {/* Escáner "leyendo tu caso" */}
+        <ScanPanel story={story} />
+      </div>
+    </div>
+  );
+}
+
+function ThinkingEmblem() {
+  return (
+    <div className="relative flex h-28 w-28 items-center justify-center">
+      <span className="absolute inset-2 rounded-full bg-navy/15 animate-pulse-ring" />
+      <span
+        className="absolute inset-2 rounded-full bg-gold/25 animate-pulse-ring"
+        style={{ animationDelay: "0.9s" }}
+      />
+      {/* Anillo giratorio (gradiente cónico) */}
+      <motion.span
+        className="absolute inset-0 rounded-full"
+        style={{
+          background:
+            "conic-gradient(from 0deg, transparent 0deg, rgba(255,195,35,0.9) 90deg, rgba(1,45,106,0.9) 200deg, transparent 320deg)",
+        }}
+        animate={{ rotate: 360 }}
+        transition={{ duration: 2.6, ease: "linear", repeat: Infinity }}
+      />
+      <span className="absolute inset-[5px] rounded-full bg-white/90 backdrop-blur-sm" />
+      <BrandMark className="relative h-[68px] w-[68px] rounded-2xl" />
+    </div>
+  );
+}
+
+function Dot({ delay }: { delay: string }) {
+  return (
+    <span
+      className="h-1.5 w-1.5 rounded-full bg-gold-deep animate-bounce-dot"
+      style={{ animationDelay: delay }}
+    />
+  );
+}
+
+function ScanPanel({ story }: { story: string }) {
+  const text =
+    story.trim().length > 0
+      ? story.trim()
+      : "Leyendo tu historia y cada dato que compartiste para evaluar tu caso…";
+  return (
+    <div className="relative mt-6 h-[132px] overflow-hidden rounded-2xl border border-navy/10 bg-white/60 p-4">
+      <p className="select-none text-[12.5px] leading-relaxed text-ink/45 [mask-image:linear-gradient(to_bottom,transparent,#000_18%,#000_82%,transparent)]">
+        {text}
+      </p>
+      {/* Línea de escaneo */}
+      <motion.div
+        className="pointer-events-none absolute inset-x-0 h-10"
+        style={{
+          background:
+            "linear-gradient(to bottom, transparent, rgba(255,195,35,0.35), rgba(1,45,106,0.12), transparent)",
+        }}
+        initial={{ top: "-2.5rem" }}
+        animate={{ top: "132px" }}
+        transition={{ duration: 1.9, ease: "easeInOut", repeat: Infinity }}
+      />
+      <div className="pointer-events-none absolute bottom-2.5 right-3 flex items-center gap-1.5 rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-bold text-navy shadow-sm">
+        <ScanLine className="h-3.5 w-3.5 text-gold-deep" />
+        Leyendo tu caso
       </div>
     </div>
   );
@@ -142,6 +197,7 @@ function ErrorView({ onRetry, onBack }: { onRetry: () => void; onBack: () => voi
         <p className="mt-2 text-[16px] text-ink-soft">Hubo un problema al procesar tu caso.</p>
         <div className="mt-7 w-full space-y-3">
           <button onClick={onRetry} className="btn-lg">
+            <Loader2 className="h-5 w-5" />
             Reintentar
           </button>
           <button onClick={onBack} className="btn-ghost-lg w-full">
