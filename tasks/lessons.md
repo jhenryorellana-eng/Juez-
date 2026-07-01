@@ -16,6 +16,18 @@ relacionar el producto con lo legal.
 **Regla**: Marca y UX sin términos legales (juez, veredicto, balanza, tribunal). El
 razonamiento legal puede seguir en los prompts internos, pero NADA legal de cara al usuario.
 
+## 2026-07-01: Producción falló por ignorar límites reales de plataforma y latencia
+**Error**: En https://juez.vercel.app el análisis "no terminaba y lanzaba error". Tres causas:
+(1) thinking MEDIUM tardaba ~107 s incluso con un PDF de 2 KB → los navegadores móviles
+(Safari) cortan fetch a ~60 s y maxDuration=120 mataba PDFs reales; (2) prometíamos subir
+15 MB pero Vercel rechaza cuerpos > 4.5 MB en el borde (413); (3) sin margen de duración.
+**Causa raíz**: Probé solo en local/desktop, donde no existen ni el corte del navegador
+móvil ni el límite de cuerpo de Vercel, y no medí la latencia como requisito.
+**Regla**: Antes de dar por bueno un endpoint de IA para producción: (a) medir su latencia
+p95 y mantenerla < 50 s si el cliente es un navegador móvil; (b) validar límites de la
+plataforma de despliegue (body 4.5 MB en Vercel, maxDuration del plan); (c) probar contra
+la URL de producción real, no solo local.
+
 ## Dirección definitiva (rediseño v3)
 - **Nombre**: "Diagnóstico" (evaluación/diagnóstico del caso). Familia de marca: x-legal.
 - **Tema**: CLARO, máxima legibilidad (texto grande, alto contraste) para personas mayores.

@@ -127,6 +127,16 @@ decididas por el usuario:
       (8 CFR § 208.15, INA § 208(a)(2)(B), Matter of S-A-), plazo de 1 año verificado con
       las fechas del documento, contrainterrogatorio realista. Build verde.
 
+## FIX PRODUCCIÓN (juez.vercel.app) ✅ (2026-07-01)
+Síntoma: el análisis no terminaba y lanzaba error en vivo. Diagnóstico con reproducción
+directa contra producción (la API sí funcionaba: key OK, pero tardaba 107 s con un PDF
+de 2 KB). Ver lessons.md.
+- [x] thinking MEDIUM → LOW en el juez (107 s → 18.7 s medidos, misma calidad de salida);
+      fallback a MINIMAL.
+- [x] maxDuration 120 → 300 (colchón para documentos grandes).
+- [x] Límite de subida 15 MB → 4 MB (Vercel rechaza cuerpos > 4.5 MB en el borde con 413).
+- [x] Verificado contra https://juez.vercel.app tras el redeploy.
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.
