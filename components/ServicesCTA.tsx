@@ -12,11 +12,11 @@ export default function ServicesCTA() {
           {BRAND.company}
         </span>
         <h3 className="mt-4 text-[23px] font-bold leading-tight tracking-tight">
-          No enfrentes tu caso solo
+          Aumenta tus probabilidades de aprobación
         </h3>
         <p className="mt-2.5 text-[15px] leading-relaxed text-white/80">
-          Nuestro equipo de especialistas puede ayudarte a preparar y fortalecer tu caso,
-          paso a paso, para darte la mejor oportunidad de éxito.
+          Los especialistas de {BRAND.company} preparan y fortalecen tu caso para presentarlo
+          con la mayor solidez posible ante el juez.
         </p>
         <a
           href={BRAND.servicesUrl}

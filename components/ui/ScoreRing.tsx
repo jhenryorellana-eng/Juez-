@@ -11,9 +11,9 @@ const LEVEL_COLOR: Record<VerdictLevel, string> = {
 };
 
 const LEVEL_LABEL: Record<VerdictLevel, string> = {
-  alto: "Probabilidad alta",
-  moderado: "Probabilidad media",
-  bajo: "Probabilidad baja",
+  alto: "Alta",
+  moderado: "Media",
+  bajo: "Baja",
 };
 
 interface Props {
