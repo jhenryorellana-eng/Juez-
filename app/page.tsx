@@ -3,25 +3,26 @@
 import { useEffect, useRef, type ComponentType } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useJuez, STEP_ORDER, type Step } from "@/lib/store";
-import PhoneShell from "@/components/PhoneShell";
+import Background from "@/components/Background";
+import Header from "@/components/Header";
 import WelcomeCard from "@/components/cards/WelcomeCard";
 import CaseCard from "@/components/cards/CaseCard";
-import InterviewDeck from "@/components/cards/InterviewDeck";
+import InterviewCard from "@/components/cards/InterviewCard";
 import AnalyzingCard from "@/components/cards/AnalyzingCard";
-import VerdictCard from "@/components/cards/VerdictCard";
+import ResultCard from "@/components/cards/ResultCard";
 
 const COMPONENTS: Record<Step, ComponentType> = {
   welcome: WelcomeCard,
   case: CaseCard,
-  interview: InterviewDeck,
+  interview: InterviewCard,
   analyzing: AnalyzingCard,
-  verdict: VerdictCard,
+  verdict: ResultCard,
 };
 
 const variants = {
-  enter: (dir: number) => ({ x: dir > 0 ? 70 : -70, opacity: 0 }),
+  enter: (dir: number) => ({ x: dir > 0 ? 48 : -48, opacity: 0 }),
   center: { x: 0, opacity: 1 },
-  exit: (dir: number) => ({ x: dir > 0 ? -70 : 70, opacity: 0 }),
+  exit: (dir: number) => ({ x: dir > 0 ? -48 : 48, opacity: 0 }),
 };
 
 export default function Page() {
@@ -37,24 +38,28 @@ export default function Page() {
   const Current = COMPONENTS[step];
 
   return (
-    <PhoneShell>
-      <AnimatePresence mode="wait" custom={dir} initial={false}>
-        <motion.div
-          key={step}
-          custom={dir}
-          variants={variants}
-          initial="enter"
-          animate="center"
-          exit="exit"
-          transition={{
-            x: { type: "spring", stiffness: 340, damping: 34 },
-            opacity: { duration: 0.18 },
-          }}
-          className="absolute inset-0"
-        >
-          <Current />
-        </motion.div>
-      </AnimatePresence>
-    </PhoneShell>
+    <div className="relative flex min-h-[100dvh] flex-col">
+      <Background />
+      <Header />
+      <main className="mx-auto flex w-full max-w-xl flex-1 flex-col px-5 pb-8 sm:px-6">
+        <AnimatePresence mode="wait" custom={dir} initial={false}>
+          <motion.div
+            key={step}
+            custom={dir}
+            variants={variants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{
+              x: { type: "spring", stiffness: 320, damping: 34 },
+              opacity: { duration: 0.2 },
+            }}
+            className="flex flex-1 flex-col"
+          >
+            <Current />
+          </motion.div>
+        </AnimatePresence>
+      </main>
+    </div>
   );
 }

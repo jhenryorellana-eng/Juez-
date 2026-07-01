@@ -22,7 +22,7 @@ export function buildDemoVerdict(
     summary:
       "Esta es una evaluación de demostración generada localmente (sin conexión a la IA). " +
       "Refleja el nivel de detalle que aportaste, no un análisis legal real. " +
-      "Configura tu GEMINI_API_KEY para obtener el veredicto completo del Juez.",
+      "Configura tu GEMINI_API_KEY para obtener el diagnóstico completo con IA.",
     strengths: [
       detail > 0.5
         ? "Aportaste un relato con buen nivel de detalle, lo que suele ayudar a la credibilidad."
@@ -31,7 +31,7 @@ export function buildDemoVerdict(
     ],
     weaknesses: [
       detail < 0.5
-        ? "La información es todavía escasa; un juez necesitaría más detalles concretos."
+        ? "La información es todavía escasa; se necesitarían más detalles concretos."
         : "Falta confirmar la evidencia documental que respalde cada afirmación.",
       "No se ha verificado el cumplimiento de plazos legales aplicables a tu caso.",
     ],
@@ -41,7 +41,7 @@ export function buildDemoVerdict(
       "Consulta con un abogado de inmigración licenciado antes de cualquier presentación.",
     ],
     nextSteps: [
-      "Configura la API de Gemini para recibir el veredicto real del Juez.",
+      "Configura la API de Gemini para recibir el diagnóstico real con IA.",
       "Prepara una línea de tiempo clara de los hechos.",
       "Identifica posibles testigos o expertos que respalden tu caso.",
     ],

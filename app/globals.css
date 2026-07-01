@@ -13,40 +13,55 @@
   }
 
   body {
-    /* Fondo neutro detrás del "teléfono" en escritorio */
-    background: #e6e6eb;
-    overscroll-behavior: none;
+    background-color: #eef3fb;
+    /* Luces de color sutiles (azul Utah + dorado) para el efecto tecnológico/elegante */
+    background-image:
+      radial-gradient(48rem 48rem at 8% -6%, rgba(1, 45, 106, 0.14), transparent 60%),
+      radial-gradient(42rem 42rem at 100% 4%, rgba(255, 195, 35, 0.16), transparent 55%),
+      radial-gradient(52rem 52rem at 50% 116%, rgba(1, 45, 106, 0.12), transparent 62%);
+    background-attachment: fixed;
   }
 
-  /* Sin resaltado azul al tocar en móvil */
   * {
     -webkit-tap-highlight-color: transparent;
+  }
+
+  ::selection {
+    background: rgba(255, 195, 35, 0.35);
   }
 }
 
 @layer components {
-  .ios-field {
-    @apply w-full rounded-ios border border-sys-sep bg-sys-bg px-4 py-3.5
-      text-[17px] leading-snug text-label outline-none transition-all duration-200
-      placeholder:text-label-tertiary
-      focus:border-blue/40 focus:bg-white focus:ring-4 focus:ring-blue/10;
+  /* Panel de vidrio esmerilado */
+  .glass {
+    @apply rounded-xl3 border border-white/70 bg-white/70 shadow-glass backdrop-blur-2xl;
   }
 
-  .ios-btn {
-    @apply flex w-full items-center justify-center gap-2 rounded-full bg-blue px-6 py-4
-      text-[17px] font-semibold text-white shadow-btn transition-all duration-200
-      active:scale-[0.97] disabled:opacity-40 disabled:shadow-none;
+  /* Botón primario grande (legible para personas mayores) */
+  .btn-lg {
+    @apply flex w-full items-center justify-center gap-2.5 rounded-2xl bg-navy px-6 py-[18px]
+      text-[19px] font-semibold text-white shadow-navy transition-all duration-200
+      hover:bg-navy-dark active:scale-[0.98]
+      disabled:cursor-not-allowed disabled:bg-ink-faint disabled:shadow-none;
   }
 
-  .ios-btn-dark {
-    @apply flex w-full items-center justify-center gap-2 rounded-full bg-label px-6 py-4
-      text-[17px] font-semibold text-white transition-all duration-200
-      active:scale-[0.97] disabled:opacity-40;
+  .btn-ghost-lg {
+    @apply flex items-center justify-center gap-2 rounded-2xl border border-navy/[0.15] bg-white/60
+      px-6 py-[18px] text-[18px] font-semibold text-navy transition-all duration-200
+      hover:bg-white active:scale-[0.98];
   }
 
-  .ios-chip {
-    @apply inline-flex items-center gap-1.5 rounded-full bg-sys-bg px-3 py-1
-      text-[13px] font-medium text-label-secondary;
+  /* Campo de texto grande y de alto contraste */
+  .field-lg {
+    @apply w-full rounded-2xl border-2 border-navy/[0.12] bg-white px-5 py-4 text-[19px]
+      leading-snug text-ink shadow-sm outline-none transition-all duration-200
+      placeholder:text-ink-faint
+      focus:border-navy/50 focus:ring-4 focus:ring-gold/25;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-2 rounded-full border border-navy/10 bg-white/70
+      px-4 py-1.5 text-[14px] font-semibold text-navy;
   }
 }
 
@@ -60,5 +75,13 @@
   .no-scrollbar {
     -ms-overflow-style: none;
     scrollbar-width: none;
+  }
+  .shimmer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+    animation: shimmer 2s infinite;
   }
 }

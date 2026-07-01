@@ -65,6 +65,18 @@ Motivo: el usuario rechazó el diseño "informe de escritorio". Ver tasks/lesson
 - [x] Añadido: fallback a gemini-3.1-flash-lite (IA real) si 3.5-flash sigue caído, ANTES del demo local.
 - Resultado: el usuario ya no ve "Modo demo" salvo que falte la key o falle todo.
 
+## REDISEÑO v3 — "Diagnóstico" (definitivo) ✅
+Motivo: rechazo del marco de celular y de la marca legal. Ver tasks/lessons.md.
+- [x] Nueva marca: "Diagnóstico" (by x-legal). Eliminado TODO lo legal: "Juez", "veredicto",
+      balanza. Icono nuevo (pulso dorado sobre azul Utah). Prompts internos reformulados.
+- [x] Sin marco de celular: producto web responsive real (columna centrada, se ve nativo en móvil).
+- [x] Colores institucionales del Estado de Utah (azul #012D6A + dorado #FFC323 + verde/rojo niveles).
+- [x] Estética clara, elegante, glassmorphism, luces de color, sombras, motion. Máxima legibilidad.
+- [x] Pensado para personas mayores: un paso claro por pantalla, "Paso X de Y", texto y botones grandes.
+- [x] Pantallas: Welcome, Case, Interview (guiada), Analyzing, Result. Componentes viejos eliminados.
+- [x] Build + typecheck verdes. Probado end-to-end con Playwright (móvil): diagnóstico real 82% asilo.
+- [x] README y marca actualizados.
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.

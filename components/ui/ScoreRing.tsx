@@ -5,14 +5,14 @@ import AnimatedNumber from "./AnimatedNumber";
 import type { VerdictLevel } from "@/lib/types";
 
 const LEVEL_COLOR: Record<VerdictLevel, string> = {
-  alto: "#34c759",
-  moderado: "#ff9500",
-  bajo: "#ff3b30",
+  alto: "#1c9253",
+  moderado: "#e0a800",
+  bajo: "#e51837",
 };
 
 const LEVEL_LABEL: Record<VerdictLevel, string> = {
   alto: "Probabilidad alta",
-  moderado: "Probabilidad moderada",
+  moderado: "Probabilidad media",
   bajo: "Probabilidad baja",
 };
 
@@ -22,8 +22,8 @@ interface Props {
 }
 
 export default function ScoreRing({ value, level }: Props) {
-  const size = 208;
-  const stroke = 14;
+  const size = 216;
+  const stroke = 16;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference * (1 - value / 100);
@@ -37,7 +37,7 @@ export default function ScoreRing({ value, level }: Props) {
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(10,10,11,0.07)"
+          stroke="rgba(1,45,106,0.10)"
           strokeWidth={stroke}
         />
         <motion.circle
@@ -51,17 +51,17 @@ export default function ScoreRing({ value, level }: Props) {
           strokeDasharray={circumference}
           initial={{ strokeDashoffset: circumference }}
           animate={{ strokeDashoffset: offset }}
-          transition={{ duration: 1.6, ease: [0.22, 1, 0.36, 1], delay: 0.25 }}
+          transition={{ duration: 1.7, ease: [0.22, 1, 0.36, 1], delay: 0.25 }}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <div className="flex items-start text-[64px] font-bold leading-none tracking-tight text-label">
+        <div className="flex items-start text-[68px] font-bold leading-none tracking-tight text-ink">
           <AnimatedNumber value={value} delay={0.25} />
-          <span className="mt-2 text-2xl text-label-tertiary">%</span>
+          <span className="mt-2.5 text-3xl text-ink-muted">%</span>
         </div>
         <div
-          className="mt-1 text-[11px] font-semibold uppercase tracking-[0.14em]"
-          style={{ color }}
+          className="mt-1.5 rounded-full px-3 py-0.5 text-[13px] font-bold uppercase tracking-[0.1em]"
+          style={{ color, backgroundColor: `${color}1a` }}
         >
           {LEVEL_LABEL[level]}
         </div>

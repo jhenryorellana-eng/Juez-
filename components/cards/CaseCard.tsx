@@ -5,10 +5,9 @@ import { motion } from "framer-motion";
 import {
   ShieldCheck,
   TrendingUp,
-  Gavel,
+  FileCheck2,
   Building2,
   ChevronRight,
-  ChevronLeft,
   Loader2,
   type LucideIcon,
 } from "lucide-react";
@@ -16,11 +15,11 @@ import { useJuez } from "@/lib/store";
 import { CASE_TYPES } from "@/lib/cases";
 import type { CaseTypeId, QuestionsResponse } from "@/lib/types";
 
-const META: Record<CaseTypeId, { icon: LucideIcon; tint: string }> = {
-  "asilo-politico": { icon: ShieldCheck, tint: "bg-blue" },
-  "reforzamiento-asilo": { icon: TrendingUp, tint: "bg-green" },
-  "apelacion-bia": { icon: Gavel, tint: "bg-indigo" },
-  "cambio-corte": { icon: Building2, tint: "bg-orange" },
+const META: Record<CaseTypeId, { icon: LucideIcon; tile: string }> = {
+  "asilo-politico": { icon: ShieldCheck, tile: "bg-navy text-white" },
+  "reforzamiento-asilo": { icon: TrendingUp, tile: "bg-good text-white" },
+  "apelacion-bia": { icon: FileCheck2, tile: "bg-gold text-navy" },
+  "cambio-corte": { icon: Building2, tile: "bg-navy-soft text-white" },
 };
 
 export default function CaseCard() {
@@ -44,74 +43,65 @@ export default function CaseCard() {
       setQuestions(data.questions, Boolean(data.demo));
       goTo("interview");
     } catch {
-      setError("No pudimos preparar la entrevista. Inténtalo de nuevo.");
+      setError("No pudimos preparar las preguntas. Inténtalo de nuevo.");
       setLoadingId(null);
     }
   }
 
   return (
-    <div className="absolute inset-0 flex flex-col">
-      <div className="flex items-center px-4 pb-2 pt-1">
-        <button
-          onClick={() => goTo("welcome")}
-          className="flex items-center gap-0.5 rounded-full py-1 pr-2 text-[17px] text-blue active:opacity-60"
-        >
-          <ChevronLeft className="h-5 w-5" />
-        </button>
-      </div>
-
-      <div className="no-scrollbar flex-1 overflow-y-auto px-6 pb-8">
-        <h2 className="mt-2 text-[30px] font-bold leading-tight tracking-tight">
-          ¿Qué tipo de caso tienes?
+    <div className="flex flex-1 flex-col py-4">
+      <header className="mb-6">
+        <h2 className="text-[28px] font-bold leading-tight tracking-tight text-ink sm:text-[32px]">
+          ¿Qué describe mejor tu situación?
         </h2>
-        <p className="mt-2 text-[16px] text-label-secondary">
-          El Juez adaptará las preguntas a tu situación.
+        <p className="mt-2 text-[17px] text-ink-soft">
+          Toca la opción que corresponde a tu caso.
         </p>
+      </header>
 
-        <div className="mt-7 overflow-hidden rounded-ios2 bg-sys-card shadow-card">
-          {CASE_TYPES.map((c, i) => {
-            const { icon: Icon, tint } = META[c.id];
-            const isLoading = loadingId === c.id;
-            return (
-              <motion.button
-                key={c.id}
-                onClick={() => choose(c.id)}
-                disabled={Boolean(loadingId)}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.06, duration: 0.4 }}
-                whileTap={{ scale: 0.985 }}
-                className={`flex w-full items-center gap-4 px-4 py-4 text-left active:bg-sys-bg disabled:opacity-60 ${
-                  i > 0 ? "border-t border-sys-sep" : ""
-                }`}
+      <div className="space-y-3.5">
+        {CASE_TYPES.map((c, i) => {
+          const { icon: Icon, tile } = META[c.id];
+          const isLoading = loadingId === c.id;
+          return (
+            <motion.button
+              key={c.id}
+              onClick={() => choose(c.id)}
+              disabled={Boolean(loadingId)}
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.08, duration: 0.45 }}
+              whileTap={{ scale: 0.985 }}
+              className="glass flex w-full items-center gap-4 p-5 text-left transition-shadow hover:shadow-lift disabled:opacity-60"
+            >
+              <span
+                className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl ${tile}`}
               >
-                <span
-                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[0.9rem] text-white ${tint}`}
-                >
-                  {isLoading ? (
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                  ) : (
-                    <Icon className="h-5 w-5" strokeWidth={2.2} />
-                  )}
+                {isLoading ? (
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                ) : (
+                  <Icon className="h-7 w-7" strokeWidth={2} />
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[19px] font-bold leading-tight text-ink">
+                  {c.name}
                 </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[17px] font-semibold leading-tight">
-                    {c.name}
-                  </span>
-                  <span className="mt-0.5 block text-[13px] leading-snug text-label-secondary">
-                    {isLoading ? "Preparando entrevista…" : c.description}
-                  </span>
+                <span className="mt-1 block text-[14px] leading-snug text-ink-muted">
+                  {isLoading ? "Preparando tus preguntas…" : c.description}
                 </span>
-                <ChevronRight className="h-5 w-5 shrink-0 text-label-tertiary" />
-              </motion.button>
-            );
-          })}
-        </div>
-
-        {error && (
-          <p className="mt-5 text-center text-[15px] text-red">{error}</p>
-        )}
+              </span>
+              <ChevronRight className="h-6 w-6 shrink-0 text-navy/40" />
+            </motion.button>
+          );
+        })}
       </div>
+
+      {error && (
+        <p className="mt-5 rounded-2xl bg-bad/10 px-4 py-3 text-center text-[15px] font-medium text-bad">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

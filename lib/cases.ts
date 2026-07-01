@@ -22,7 +22,7 @@ export const CASE_TYPES: CaseType[] = [
     name: "Apelación ante la BIA",
     shortName: "Apelación BIA",
     description:
-      "Apelar una decisión negativa del juez de inmigración ante la Junta de Apelaciones de Inmigración (BIA).",
+      "Apelar una decisión negativa de la corte de inmigración ante la Junta de Apelaciones (BIA).",
     icon: "Gavel",
   },
   {
@@ -51,11 +51,11 @@ export interface AnalysisPhase {
 }
 
 export const ANALYSIS_PHASES: AnalysisPhase[] = [
-  { label: "Revisando tu declaración", detail: "Leyendo cada detalle de tu historia" },
-  { label: "Evaluando credibilidad", detail: "Consistencia y coherencia del relato" },
-  { label: "Cruzando con criterios legales", detail: "Elementos del caso vs. requisitos" },
-  { label: "Comparando precedentes", detail: "Patrones de casos similares" },
-  { label: "Calculando probabilidad", detail: "Emitiendo el veredicto del juez" },
+  { label: "Revisando tu información", detail: "Leyendo cada detalle de tu historia" },
+  { label: "Evaluando la solidez", detail: "Consistencia y coherencia de tu caso" },
+  { label: "Comparando con casos similares", detail: "Patrones de situaciones parecidas" },
+  { label: "Calculando probabilidades", detail: "Estimando tus posibilidades de éxito" },
+  { label: "Preparando tu diagnóstico", detail: "Redactando el resultado final" },
 ];
 
 /**

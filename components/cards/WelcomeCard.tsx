@@ -1,80 +1,65 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Scale, ArrowRight, Sparkles, ShieldCheck, MessageSquareText } from "lucide-react";
+import { ArrowRight, MessagesSquare, Zap, Lock } from "lucide-react";
 import { useJuez } from "@/lib/store";
+import { BrandMark } from "@/components/Brand";
 
 const POINTS = [
-  { icon: MessageSquareText, text: "Responde unas preguntas, una a una" },
-  { icon: Sparkles, text: "La IA evalúa tu caso al instante" },
-  { icon: ShieldCheck, text: "Sin cuentas · tu historia no se guarda" },
+  { icon: MessagesSquare, text: "Respondes unas preguntas simples, una por una" },
+  { icon: Zap, text: "Recibes tu diagnóstico al instante" },
+  { icon: Lock, text: "Privado y gratis · no necesitas cuenta" },
 ];
 
 export default function WelcomeCard() {
   const goTo = useJuez((s) => s.goTo);
 
   return (
-    <div className="absolute inset-0 flex flex-col px-7 pb-9 pt-2">
-      <div className="flex flex-1 flex-col items-center justify-center text-center">
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ type: "spring", stiffness: 220, damping: 18 }}
-          className="mb-7 flex h-20 w-20 items-center justify-center rounded-[1.6rem] bg-label text-white shadow-card"
-        >
-          <Scale className="h-9 w-9" strokeWidth={1.9} />
-        </motion.div>
-
-        <motion.h1
-          initial={{ y: 14, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.08, duration: 0.5 }}
-          className="text-[40px] font-bold leading-[1.05] tracking-tight"
-        >
-          El Juez
-        </motion.h1>
-        <motion.p
-          initial={{ y: 14, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.16, duration: 0.5 }}
-          className="mt-3 text-balance text-[17px] leading-relaxed text-label-secondary"
-        >
-          Cuenta tu caso de inmigración y descubre su probabilidad de éxito ante una
-          corte de EE. UU.
-        </motion.p>
-
-        <motion.div
-          initial={{ y: 16, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.26, duration: 0.5 }}
-          className="mt-9 w-full space-y-2.5"
-        >
-          {POINTS.map((p) => (
-            <div
-              key={p.text}
-              className="flex items-center gap-3 rounded-ios bg-sys-bg px-4 py-3 text-left"
-            >
-              <p.icon className="h-5 w-5 shrink-0 text-blue" strokeWidth={2} />
-              <span className="text-[15px] font-medium text-label">{p.text}</span>
-            </div>
-          ))}
-        </motion.div>
-      </div>
-
+    <div className="flex flex-1 flex-col justify-center py-4">
       <motion.div
-        initial={{ y: 20, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ delay: 0.36, duration: 0.5 }}
-        className="space-y-4"
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+        className="glass p-7 sm:p-9"
       >
-        <p className="px-2 text-center text-[12px] leading-relaxed text-label-tertiary">
-          Herramienta educativa con IA. No es asesoría legal.
-        </p>
-        <button onClick={() => goTo("case")} className="ios-btn-dark">
+        <div className="flex flex-col items-center text-center">
+          <BrandMark className="h-16 w-16 rounded-2xl" />
+          <span className="pill mt-6">Evaluación gratuita · 3 minutos</span>
+          <h1 className="mt-5 text-balance text-[34px] font-bold leading-[1.08] tracking-tight text-ink sm:text-[40px]">
+            Conoce las probabilidades de tu caso de inmigración
+          </h1>
+          <p className="mt-4 text-balance text-[18px] leading-relaxed text-ink-soft">
+            Cuéntanos tu situación y recibe un diagnóstico claro de qué tan probable es que
+            tu caso tenga éxito en EE. UU.
+          </p>
+        </div>
+
+        <div className="mt-8 space-y-3">
+          {POINTS.map((p, i) => (
+            <motion.div
+              key={p.text}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.25 + i * 0.1, duration: 0.5 }}
+              className="flex items-center gap-4 rounded-2xl border border-navy/10 bg-white/70 px-5 py-4"
+            >
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-navy/[0.06] text-navy">
+                <p.icon className="h-[22px] w-[22px]" strokeWidth={2} />
+              </span>
+              <span className="text-[16px] font-medium leading-snug text-ink">{p.text}</span>
+            </motion.div>
+          ))}
+        </div>
+
+        <button onClick={() => goTo("case")} className="btn-lg mt-8">
           Comenzar
           <ArrowRight className="h-5 w-5" />
         </button>
       </motion.div>
+
+      <p className="mx-auto mt-5 max-w-md px-2 text-center text-[13px] leading-relaxed text-ink-muted">
+        Herramienta informativa. No sustituye la orientación de un profesional.
+      </p>
     </div>
   );
 }
