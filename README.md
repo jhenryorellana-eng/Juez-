@@ -1,11 +1,11 @@
 # El Juez ⚖️ — Evaluador de casos de inmigración con IA
 
-Un "probador" donde una persona relata su historia de migración, una IA le hace una
-entrevista adaptada a su tipo de caso, y un **Juez** con IA evalúa la **probabilidad de
-éxito** de su caso de inmigración en EE. UU.
+App **mobile-first** (estilo iOS, tarjetas deslizables) donde una persona relata su
+historia de migración, una IA le hace una entrevista adaptada a su tipo de caso, y un
+**Juez** con IA evalúa la **probabilidad de éxito** de su caso de inmigración en EE. UU.
 
-Experiencia paso a paso, minimal-premium, con transiciones fluidas, un loader de
-"deliberación del Juez" y un veredicto animado.
+Experiencia paso a paso con tarjetas deslizables, barra de progreso tipo "stories",
+un loader de "deliberación del Juez" y un veredicto animado.
 
 > ⚠️ **Aviso legal:** Es una herramienta **educativa**. **No es asesoría legal.**
 > Cada caso es único; siempre consulta con un abogado de inmigración licenciado.
@@ -19,66 +19,71 @@ Experiencia paso a paso, minimal-premium, con transiciones fluidas, un loader de
 - **Cambio de corte / venue** — trasladar el caso a otra jurisdicción.
 
 ## Modelos de IA (Gemini 3.x)
-Elegidos desde la [página de precios oficial](https://ai.google.dev/gemini-api/docs/pricing):
-
-| Uso | Modelo | Por qué |
+| Uso | Modelo | Thinking |
 |---|---|---|
-| Veredicto del Juez | `gemini-3.5-flash` | El más inteligente, para el razonamiento legal del caso |
-| Preguntas de la entrevista | `gemini-3.1-flash-lite` | Rápido y económico para generar preguntas dinámicas |
+| Veredicto del Juez | `gemini-3.5-flash` | MEDIUM |
+| Preguntas de la entrevista | `gemini-3.1-flash-lite` | MINIMAL |
 
-Si no hay API key configurada, la app funciona en **modo demo** (preguntas estándar +
-veredicto simulado) para que puedas probar la experiencia completa sin conexión.
+- **Robustez:** reintentos con backoff ante errores transitorios (503/429) y, si el
+  modelo principal sigue sobrecargado, **fallback a `gemini-3.1-flash-lite`** (sigue
+  siendo IA real) antes de recurrir al modo demo local.
+- **Modo demo:** si no hay `GEMINI_API_KEY`, la app funciona con preguntas estándar y
+  un veredicto simulado, para probar la experiencia completa sin conexión.
 
 ## Stack
 - **Next.js 16** (App Router) + **TypeScript**
-- **Tailwind CSS v3** (estilo minimal-premium)
-- **Framer Motion** (transiciones y micro-animaciones)
+- **Tailwind CSS v3** (estética iOS limpia)
+- **Framer Motion** (tarjetas deslizables, gestos, micro-animaciones)
 - **Zustand** (estado del flujo)
 - **@google/genai** (SDK oficial de Gemini, llamadas **solo en el servidor**)
 
-## Puesta en marcha
+## Puesta en marcha (local)
 
 ```bash
-# 1. Instalar dependencias
 npm install
-
-# 2. Configurar la API key de Gemini
-cp .env.local.example .env.local
-#   y pega tu key (https://aistudio.google.com/apikey) en GEMINI_API_KEY
-
-# 3. Desarrollo
-npm run dev        # http://localhost:3000
-
-# 4. Producción
-npm run build
-npm run start
+cp .env.local.example .env.local     # pega tu key en GEMINI_API_KEY
+npm run dev                          # http://localhost:3000
 ```
+Ábrelo en el móvil o reduce la ventana del navegador a un ancho de teléfono.
 
-## Seguridad
-- `GEMINI_API_KEY` se usa **únicamente en Route Handlers del servidor**; nunca se expone
-  al cliente ni se incluye en el bundle.
+## Despliegue en Vercel
+
+Este repo está listo para Vercel con CI/CD (cada `git push` a `main` redespliega):
+
+1. En [vercel.com/new](https://vercel.com/new), **importa** el repositorio `Juez-`.
+2. En **Environment Variables**, añade:
+   - `GEMINI_API_KEY` = tu clave de Gemini · entornos: **Production** y **Preview**.
+3. **Deploy**. Framework detectado automáticamente (Next.js), sin configuración extra.
+
+> La `GEMINI_API_KEY` se lee solo en el servidor (Route Handlers). Nunca se expone al
+> cliente ni se incluye en el bundle, y `.env.local` está en `.gitignore`.
+
+## Seguridad y notas de producción
 - Sin login ni base de datos: la historia del usuario **no se guarda** (stateless).
-- `.env.local` está en `.gitignore`. Nunca subas tu key al repositorio.
+- Las rutas API tienen un **rate-limit en memoria** (best-effort) como primera línea
+  de defensa. En serverless cada instancia tiene su propia memoria, así que para
+  límites robustos y compartidos conviene usar **Upstash Redis** o **Vercel KV**.
+- Rota la `GEMINI_API_KEY` si sospechas que se expuso.
 
 ## Estructura
 
 ```
 app/
-  layout.tsx            # fuente Inter, metadata, lang=es
-  page.tsx              # orquestador del wizard (transiciones entre pasos)
-  globals.css           # estilos base + utilidades premium
+  layout.tsx            # fuente, metadata, viewport móvil
+  page.tsx              # controlador del deck (transiciones entre pasos)
+  globals.css           # estilos base iOS
   api/
-    interview/questions/route.ts   # gemini-3.1-flash-lite (+ fallback)
-    verdict/route.ts               # gemini-3.5-flash (+ fallback)
+    interview/questions/route.ts   # gemini-3.1-flash-lite (+ rate-limit + fallback)
+    verdict/route.ts               # gemini-3.5-flash (+ rate-limit + fallback)
 components/
-  Background, TopBar, StepProgress, Disclaimer
-  ui/        AnimatedNumber, Reveal, ScoreRing
-  steps/     Hero · CaseType · Interview · Analyzing · Verdict
+  PhoneShell · StoriesProgress
+  ui/     AnimatedNumber · Reveal · ScoreRing
+  cards/  Welcome · Case · InterviewDeck · Analyzing · Verdict
 lib/
-  types · cases · prompts · gemini · demo · store
+  types · cases · prompts · gemini · demo · ratelimit · store
 ```
 
 ## Flujo
-1. **Hero** → 2. **Tipo de caso** → 3. **Entrevista** (preguntas IA + relato) →
-4. **El Juez delibera** (loader) → 5. **Veredicto** (probabilidad, factores,
-fortalezas/riesgos, recomendaciones, próximos pasos).
+1. **Bienvenida** → 2. **Tipo de caso** (lista iOS) → 3. **Entrevista** (tarjetas
+deslizables: preguntas IA + relato) → 4. **El Juez delibera** (loader) →
+5. **Veredicto** (probabilidad, factores, fortalezas/riesgos, recomendaciones, pasos).
