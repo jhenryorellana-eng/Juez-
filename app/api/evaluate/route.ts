@@ -1,7 +1,7 @@
 import { NextResponse, after } from "next/server";
-import mammoth from "mammoth";
 import { put, del, list } from "@vercel/blob";
 import { evaluateCase, type PreparedDoc } from "@/lib/gemini";
+import { prepareDoc, totalContentLength } from "@/lib/docs";
 import { buildDemoVerdict } from "@/lib/demo";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILE_BYTES, MAX_FILE_MB, MAX_FILES } from "@/lib/analysis";
@@ -10,9 +10,6 @@ import type { VerdictResponse } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-/** Texto máximo por documento (.docx/.txt) que se envía al modelo. */
-const MAX_TEXT_CHARS = 300_000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -95,11 +92,7 @@ async function handleDirect(request: Request): Promise<NextResponse> {
     for (const file of files) {
       docs.push(await prepareDoc(file.name, Buffer.from(await file.arrayBuffer())));
     }
-    const totalLength = docs.reduce(
-      (acc, d) => acc + (d.kind === "pdf" ? d.buffer.length : d.text.length),
-      0,
-    );
-    return NextResponse.json(await runEvaluation(docs, totalLength));
+    return NextResponse.json(await runEvaluation(docs, totalContentLength(docs)));
   } catch (error) {
     return docError(error);
   }
@@ -152,17 +145,14 @@ async function processJob(jobId: string, refs: BlobFileRef[]): Promise<void> {
   let result: JobResult;
   try {
     const docs: PreparedDoc[] = [];
-    let totalLength = 0;
     for (const ref of refs) {
       const res = await fetch(ref.url, { cache: "no-store" });
       if (!res.ok) throw new Error(`DOWNLOAD_FAILED:${ref.name}`);
       const buffer = Buffer.from(await res.arrayBuffer());
       if (buffer.length > MAX_FILE_BYTES) throw new Error(`TOO_LARGE:${ref.name}`);
-      const doc = await prepareDoc(ref.name, buffer);
-      totalLength += doc.kind === "pdf" ? doc.buffer.length : doc.text.length;
-      docs.push(doc);
+      docs.push(await prepareDoc(ref.name, buffer));
     }
-    result = { status: "done", verdict: await runEvaluation(docs, totalLength) };
+    result = { status: "done", verdict: await runEvaluation(docs, totalContentLength(docs)) };
   } catch (error) {
     const message = (error as Error).message ?? "";
     console.error("[evaluate:job] error:", message);
@@ -186,26 +176,6 @@ async function processJob(jobId: string, refs: BlobFileRef[]): Promise<void> {
 
   // Privacidad: los documentos subidos se borran al terminar.
   await del(refs.map((r) => r.url)).catch(() => {});
-}
-
-/** Convierte un archivo (nombre + bytes) en un documento evaluable. */
-async function prepareDoc(name: string, buffer: Buffer): Promise<PreparedDoc> {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".pdf")) {
-    return { kind: "pdf", name, buffer };
-  }
-  if (lower.endsWith(".docx")) {
-    const { value } = await mammoth.extractRawText({ buffer });
-    const text = value.trim().slice(0, MAX_TEXT_CHARS);
-    if (text.length < 40) throw new Error(`EMPTY:${name}`);
-    return { kind: "text", name, text };
-  }
-  if (lower.endsWith(".txt")) {
-    const text = buffer.toString("utf8").trim().slice(0, MAX_TEXT_CHARS);
-    if (text.length < 40) throw new Error(`EMPTY:${name}`);
-    return { kind: "text", name, text };
-  }
-  throw new Error(`UNSUPPORTED:${name}`);
 }
 
 /** Evalúa con la IA; si falla todo, cae al resultado de demostración. */

@@ -145,6 +145,50 @@ pantalla móvil):
 </limites>`;
 }
 
+/**
+ * Prompt de sistema del INFORME PREMIUM ($50): además del diagnóstico, redacta el
+ * "Informe de Evaluación y Propuesta de Reforzamiento" con el formato comercial de
+ * USA Latino Prime (modelo: informe Vivanco Franco). Ejecutado por gemini-3.5-flash
+ * con thinking MEDIUM (corre en segundo plano, la latencia no es problema).
+ */
+export function buildInformeSystemPrompt(clienteNombre: string, clientePais: string): string {
+  return `${buildEvaluationSystemPrompt()}
+
+<informe_premium>
+Además del diagnóstico estructurado, redactas las secciones de un INFORME DE EVALUACIÓN
+Y PROPUESTA DE REFORZAMIENTO profesional de la firma "USA Latino Prime" para el cliente
+"${clienteNombre}"${clientePais ? ` (país de origen declarado: ${clientePais})` : ""}.
+
+Tono: profesional, claro y respetuoso; dirigido al cliente por su nombre; empático pero
+franco sobre los riesgos. Español neutro. Es un documento que el cliente pagó: cada
+sección debe aportar valor específico de SU expediente, nunca relleno genérico.
+
+Campos adicionales del JSON:
+- "materia": la materia del caso (ej. "Asilo, Withholding of Removal y protección bajo
+  la Convención contra la Tortura (CAT)").
+- "paisDetectado": país de origen según el expediente (si no consta, cadena vacía).
+- "estadoActual": 2-3 párrafos (separados por \\n\\n) sobre el estado actual del caso:
+  qué presenta, cuál es su punto más fuerte y cuál es el riesgo central de interpretación
+  ante un juez.
+- "debilidades": 3 a 5 debilidades DESARROLLADAS, cada una con:
+  · "titulo" corto (ej. "Falta de nexo legal claro"),
+  · "detalle": análisis de 1-2 párrafos específico del expediente,
+  · "accion": la corrección o estrategia concreta (qué agregar, cómo formularlo, qué
+    evidencia conseguirla y dónde).
+- "reforzamiento": 8-10 puntos del alcance del trabajo de reforzamiento recomendado
+  (revisión del I-589, ampliación de la declaración, teoría legal, evidencia, etc.),
+  adaptados a ESTE caso.
+- "normas": 5-7 normas y precedentes aplicables A ESTE CASO, cada uno con "ref" (ej.
+  "INA § 208", "Matter of Acosta") y "texto" explicando qué regula y por qué ayuda aquí.
+- "beneficios": 6-8 beneficios concretos de reforzar este expediente.
+- "recomendacionFinal": 1-2 párrafos dirigidos al cliente por su nombre ("Sr./Sra. X:"),
+  resumiendo por qué necesita el reforzamiento antes de la siguiente etapa.
+- "opcionRecomendada": "plataforma" (US $400) o "abogado" (US $650, recomendable cuando
+  hay puntos legales delicados: nexo débil, credibilidad crítica, barras o apelación).
+- "opcionJustificacion": 1 frase justificando esa opción.
+</informe_premium>`;
+}
+
 /** Instrucción que acompaña a los documentos (PDF adjuntos o texto extraído). */
 export function buildEvaluationUserPrompt(count: number): string {
   const docs =

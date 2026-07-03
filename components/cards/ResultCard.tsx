@@ -9,10 +9,12 @@ import {
   ListChecks,
   MessageCircleQuestion,
 } from "lucide-react";
+import { FileDown, ArrowUpRight } from "lucide-react";
 import { useJuez } from "@/lib/store";
 import Reveal from "@/components/ui/Reveal";
 import ScoreRing from "@/components/ui/ScoreRing";
 import ServicesCTA from "@/components/ServicesCTA";
+import { INFORME_PRICE_USD } from "@/lib/stripe-shared";
 import type { MatrixItem, MatrixStatus, PrepLevel } from "@/lib/types";
 
 const PREP: Record<PrepLevel, { label: string; color: string; bg: string }> = {
@@ -159,7 +161,12 @@ export default function ResultCard() {
       )}
 
       {/* Recomendación profesional */}
-      <Reveal delay={0.26}>
+      {/* Embudo al informe premium ($50) */}
+      <Reveal delay={0.24}>
+        <PremiumCTA />
+      </Reveal>
+
+      <Reveal delay={0.28}>
         <ServicesCTA />
       </Reveal>
 
@@ -177,6 +184,37 @@ export default function ResultCard() {
           Evaluar otro caso
         </button>
       </Reveal>
+    </div>
+  );
+}
+
+/** Gancho al informe premium de $50 (abre /pro fuera del iframe del demo). */
+function PremiumCTA() {
+  return (
+    <div className="relative overflow-hidden rounded-xl3 border-2 border-gold/70 bg-white/80 p-6 shadow-gold backdrop-blur-xl">
+      <div className="pointer-events-none absolute -right-10 -top-10 h-36 w-36 rounded-full bg-gold/25 blur-3xl" />
+      <div className="relative">
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.18em] text-gold-deep">
+          Informe completo · ${INFORME_PRICE_USD}
+        </span>
+        <h3 className="mt-2 font-display text-[22px] font-bold leading-tight tracking-tight text-ink">
+          Recibe el documento completo para fortalecer tu caso
+        </h3>
+        <p className="mt-2 text-[15px] leading-relaxed text-ink-soft">
+          Informe profesional en PDF: debilidades desarrolladas una a una, normas
+          legales aplicables, plan de reforzamiento y recomendación de USA Latino Prime.
+        </p>
+        <a
+          href="/pro"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-lg mt-5"
+        >
+          <FileDown className="h-5 w-5" />
+          Obtener mi informe · ${INFORME_PRICE_USD}
+          <ArrowUpRight className="h-5 w-5" />
+        </a>
+      </div>
     </div>
   );
 }

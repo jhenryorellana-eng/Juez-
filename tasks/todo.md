@@ -156,6 +156,41 @@ Pedido: hasta 100 MB por archivo, lectura completa, hasta 10 documentos.
       habilitar archivos > 3.5 MB en producción. Sin él, los archivos grandes muestran
       el error "almacenamiento no habilitado".
 
+## v6 — Dos niveles: DEMO (gratis) + PREMIUM $50/uso ✅ IMPLEMENTADO (2026-07-03)
+Decisiones del usuario: Stripe Checkout · /pro en el mismo proyecto · tabla de upsell
+$400/$650 tal cual el ejemplo.
+- [x] `/` sigue siendo el demo (iframe x-legal intacto) + CTA dorado al informe de $50.
+- [x] `/pro`: landing premium → datos del cliente → subida (Blob) → Stripe Checkout $50.
+- [x] `/pro/resultado`: verifica pago (anti-reuso vía job en Blob), procesa en segundo
+      plano (after) con thinking MEDIUM, y entrega informe en pantalla + PDF descargable.
+- [x] PDF de marca USA Latino Prime (@react-pdf/renderer): membrete, ficha del caso,
+      secciones I-VIII, tabla $400/$650 con "RECOMENDADA", caja de recomendación y pie
+      con paginación. Validado contra el ejemplo Vivanco (3 bugs visuales corregidos:
+      solape del membrete, solape de normas, glifo ★ no soportado → "• RECOMENDADA •").
+- [x] /api/checkout (crea job + sesión Stripe vía REST, sin SDK), /api/pro/run (verify
+      + run + poll), /api/dev/informe-pdf (preview solo en desarrollo).
+- [x] FilePicker extraído y compartido demo/premium. Bypass de desarrollo sin Stripe.
+- [ ] PENDIENTE (usuario): STRIPE_SECRET_KEY en Vercel + Blob store (obligatorios
+      para el premium en producción).
+
+## Plan original v6 (referencia)
+Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
+análisis profundo + genera el "Informe de Evaluación y Propuesta de Reforzamiento"
+personalizado (formato del PDF de ejemplo Vivanco Franco: ficha del caso, carta al
+cliente, estado actual, debilidades desarrolladas, reforzamiento recomendado, normas
+legales, beneficios, tabla de costos $400/$650 y recomendación final). El informe de
+$50 vende a su vez el servicio de reforzamiento — embudo: demo → $50 → $400/$650.
+
+Arquitectura propuesta (un solo codebase, dos modos):
+- `/` queda como DEMO (no romper el iframe de x-legal). CTA del demo → página premium.
+- `/pro` (o dominio propio): landing premium → datos del cliente (nombre para la carta,
+  email) → subida de documentos → PAGO $50 (Stripe Checkout; x-legal ya usa Stripe) →
+  verificación server-side de la sesión pagada (anti-reuso) → análisis profundo
+  (thinking alto, prompt de informe completo) → informe en pantalla + PDF descargable
+  con la marca USA Latino Prime (@react-pdf/renderer, navy/dorado), almacenado en Blob.
+- Pendientes de decisión del usuario: método de cobro, ubicación del premium, tabla
+  de upsell en el PDF.
+
 ## Próximas mejoras posibles
 - Exportar veredicto a PDF/compartir, follow-ups dinámicos del juez, modo voz
   (gemini-3.5-live-translate), guardado opcional con Supabase, rate-limiting, deploy en Vercel.

@@ -1,7 +1,11 @@
 import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
 import type { Schema, ContentListUnion, Part } from "@google/genai";
-import type { Verdict } from "./types";
-import { buildEvaluationSystemPrompt, buildEvaluationUserPrompt } from "./prompts";
+import type { Verdict, Informe, ClienteInfo } from "./types";
+import {
+  buildEvaluationSystemPrompt,
+  buildEvaluationUserPrompt,
+  buildInformeSystemPrompt,
+} from "./prompts";
 
 /** Modelos elegidos según la página de precios de Gemini (solo 3.x). */
 export const MODELS = {
@@ -197,6 +201,116 @@ export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
     });
     return normalizeVerdict(verdict);
   }
+}
+
+/** Campos adicionales del informe premium sobre el schema del diagnóstico. */
+const INFORME_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    ...VERDICT_SCHEMA.properties,
+    materia: { type: Type.STRING },
+    paisDetectado: { type: Type.STRING },
+    estadoActual: { type: Type.STRING },
+    debilidades: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          titulo: { type: Type.STRING },
+          detalle: { type: Type.STRING },
+          accion: { type: Type.STRING },
+        },
+        required: ["titulo", "detalle", "accion"],
+      },
+    },
+    reforzamiento: { type: Type.ARRAY, items: { type: Type.STRING } },
+    normas: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          ref: { type: Type.STRING },
+          texto: { type: Type.STRING },
+        },
+        required: ["ref", "texto"],
+      },
+    },
+    beneficios: { type: Type.ARRAY, items: { type: Type.STRING } },
+    recomendacionFinal: { type: Type.STRING },
+    opcionRecomendada: { type: Type.STRING, enum: ["plataforma", "abogado"] },
+    opcionJustificacion: { type: Type.STRING },
+  },
+  required: [
+    ...(VERDICT_SCHEMA.required ?? []),
+    "materia",
+    "paisDetectado",
+    "estadoActual",
+    "debilidades",
+    "reforzamiento",
+    "normas",
+    "beneficios",
+    "recomendacionFinal",
+    "opcionRecomendada",
+    "opcionJustificacion",
+  ],
+};
+
+/**
+ * Genera el informe premium completo (diagnóstico + secciones del informe).
+ * Corre en segundo plano: usa thinking MEDIUM para máxima profundidad.
+ */
+export async function generateInforme(
+  docs: PreparedDoc[],
+  cliente: ClienteInfo,
+): Promise<Informe> {
+  const parts = await buildParts(docs);
+  const contents: ContentListUnion = [
+    ...parts,
+    { text: buildEvaluationUserPrompt(docs.length) },
+  ];
+
+  const baseConfig = {
+    systemInstruction: buildInformeSystemPrompt(cliente.nombre, cliente.pais),
+    responseMimeType: "application/json",
+    responseSchema: INFORME_SCHEMA,
+    temperature: 0.4,
+  };
+
+  try {
+    const informe = await generateJson<Informe>({
+      model: MODELS.judge,
+      contents,
+      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } },
+      retries: 2,
+    });
+    return normalizeInforme(informe);
+  } catch (err) {
+    if (!isRetryable(err)) throw err;
+    const informe = await generateJson<Informe>({
+      model: MODELS.judgeFallback,
+      contents,
+      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      retries: 1,
+    });
+    return normalizeInforme(informe);
+  }
+}
+
+function normalizeInforme(i: Informe): Informe {
+  const base = normalizeVerdict(i);
+  return {
+    ...base,
+    materia: i.materia?.trim() || "Asilo y protecciones relacionadas",
+    paisDetectado: i.paisDetectado ?? "",
+    estadoActual: i.estadoActual ?? "",
+    debilidades: (i.debilidades ?? []).slice(0, 5),
+    reforzamiento: (i.reforzamiento ?? []).slice(0, 10),
+    normas: (i.normas ?? []).slice(0, 7),
+    beneficios: (i.beneficios ?? []).slice(0, 8),
+    recomendacionFinal: i.recomendacionFinal ?? "",
+    opcionRecomendada: i.opcionRecomendada === "plataforma" ? "plataforma" : "abogado",
+    opcionJustificacion: i.opcionJustificacion ?? "",
+  };
 }
 
 const PREP_LEVELS = new Set(["A", "B", "C"]);
