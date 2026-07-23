@@ -232,8 +232,52 @@ function InformeDoc({ cliente, informe, fecha }: InformeDocProps) {
         <Text style={s.section}>II. ESTADO ACTUAL DEL CASO</Text>
         <Paragraphs text={informe.estadoActual} />
 
-        {/* III. Debilidades */}
-        <Text style={s.section}>III. DEBILIDADES IDENTIFICADAS</Text>
+        {/* III. Miedo creíble */}
+        {informe.miedoCreible.analisis.length > 0 && (
+          <>
+            <Text style={s.section}>
+              III. ANÁLISIS DEL MIEDO CREÍBLE (CREDIBLE FEAR)
+            </Text>
+            <Paragraphs text={informe.miedoCreible.analisis} />
+            <Text style={s.sub}>Temor subjetivo</Text>
+            <Paragraphs text={informe.miedoCreible.subjetivo} />
+            <Text style={s.sub}>Base objetiva</Text>
+            <Paragraphs text={informe.miedoCreible.objetivo} />
+            <Text style={s.sub}>Nexo con un motivo protegido</Text>
+            <Paragraphs text={informe.miedoCreible.nexo} />
+          </>
+        )}
+
+        {/* IV. Casos ganados del país */}
+        {informe.investigacionPais.resumen.length > 0 && (
+          <>
+            <Text style={s.section}>
+              IV. CASOS GANADOS Y PANORAMA DE {pais.toUpperCase()}
+            </Text>
+            <Paragraphs text={informe.investigacionPais.resumen} />
+            {informe.investigacionPais.casos.map((c, i) => (
+              <View key={i} wrap={false}>
+                <Text style={s.sub}>{c.referencia}</Text>
+                <Paragraphs text={c.resumen} />
+              </View>
+            ))}
+            {informe.investigacionPais.fuentes.length > 0 && (
+              <>
+                <Text style={{ fontSize: 8, color: MUTED, marginTop: 4 }}>
+                  Fuentes consultadas:
+                </Text>
+                {informe.investigacionPais.fuentes.map((f, i) => (
+                  <Text key={i} style={{ fontSize: 7.5, color: MUTED, paddingLeft: 10 }}>
+                    · {f}
+                  </Text>
+                ))}
+              </>
+            )}
+          </>
+        )}
+
+        {/* V. Debilidades */}
+        <Text style={s.section}>V. DEBILIDADES IDENTIFICADAS</Text>
         {informe.debilidades.map((d, i) => (
           <View key={i} wrap={false}>
             <Text style={s.sub}>
@@ -249,8 +293,56 @@ function InformeDoc({ cliente, informe, fecha }: InformeDocProps) {
           </View>
         ))}
 
-        {/* IV. Reforzamiento */}
-        <Text style={s.section}>IV. REFORZAMIENTO RECOMENDADO</Text>
+        {/* VI. Guía de detalles */}
+        {informe.guiaDetalles.introduccion.length > 0 && (
+          <>
+            <Text style={s.section}>
+              VI. GUÍA DE DETALLES: LO QUE BUSCAN LOS JUECES DE INMIGRACIÓN
+            </Text>
+            <Paragraphs text={informe.guiaDetalles.introduccion} />
+            <Text style={s.p}>
+              Los adjudicadores evalúan la credibilidad por el nivel de detalle y la
+              consistencia del relato: nombres, fechas, horas, lugares exactos,
+              descripción de las personas (edad, estatura, ropa, cicatrices), colores y
+              modelos de vehículos, las palabras que se dijeron y el orden cronológico
+              de los hechos. Compare estos dos relatos de una misma escena:
+            </Text>
+            <View style={s.box} wrap={false}>
+              <Text style={s.boxLabel}>RELATO VAGO (ASÍ NO)</Text>
+              <Text style={{ fontFamily: "Times-Italic" }}>
+                "{informe.guiaDetalles.ejemploVago}"
+              </Text>
+            </View>
+            <View style={s.box} wrap={false}>
+              <Text style={s.boxLabel}>
+                CON EL DETALLE QUE BUSCA UN JUEZ (PLANTILLA — LLÉNELA CON SU VERDAD)
+              </Text>
+              <Text style={{ fontFamily: "Times-Italic" }}>
+                "{informe.guiaDetalles.ejemploDetallado}"
+              </Text>
+            </View>
+            <Text style={[s.p, { marginTop: 10 }]}>
+              Puntos de su expediente donde agregar este nivel de detalle:
+            </Text>
+            {informe.guiaDetalles.puntos.map((p, i) => (
+              <View key={i} wrap={false}>
+                <Text style={s.sub}>
+                  {i + 1}. {p.titulo}
+                </Text>
+                <Text style={[s.p, { paddingLeft: 10 }]}>{p.instruccion}</Text>
+              </View>
+            ))}
+            <Text style={[s.p, { fontFamily: "Helvetica-Bold" }]}>
+              Importante: estas son guías y estructuras — la historia y cada dato los
+              pone usted, con su verdad. Nunca invente, exagere ni ajuste hechos: una
+              solicitud frívola inhabilita casi todo beneficio migratorio
+              (INA § 208(d)(6)). El detalle documenta lo que ya pasó, no lo reemplaza.
+            </Text>
+          </>
+        )}
+
+        {/* VII. Reforzamiento */}
+        <Text style={s.section}>VII. REFORZAMIENTO RECOMENDADO</Text>
         <Text style={s.p}>
           USA Latino Prime recomienda realizar un reforzamiento integral del
           expediente. Este trabajo incluiría:
@@ -259,8 +351,8 @@ function InformeDoc({ cliente, informe, fecha }: InformeDocProps) {
           <Bullet key={i}>{r}</Bullet>
         ))}
 
-        {/* V. Normas */}
-        <Text style={s.section}>V. NORMAS LEGALES QUE SE PUEDEN INCORPORAR</Text>
+        {/* VIII. Normas */}
+        <Text style={s.section}>VIII. NORMAS LEGALES QUE SE PUEDEN INCORPORAR</Text>
         <Text style={s.p}>
           El reforzamiento permitirá introducir fundamentos legales como los
           siguientes:
@@ -274,15 +366,15 @@ function InformeDoc({ cliente, informe, fecha }: InformeDocProps) {
           </Text>
         ))}
 
-        {/* VI. Beneficios */}
-        <Text style={s.section}>VI. BENEFICIOS DE REFORZAR EL CASO</Text>
+        {/* IX. Beneficios */}
+        <Text style={s.section}>IX. BENEFICIOS DE REFORZAR EL CASO</Text>
         <Text style={s.p}>El reforzamiento del expediente permitirá:</Text>
         {informe.beneficios.map((b, i) => (
           <Bullet key={i}>{b}</Bullet>
         ))}
 
-        {/* VII. Costos */}
-        <Text style={s.section}>VII. COSTOS Y TIEMPO DE ENTREGA</Text>
+        {/* X. Costos */}
+        <Text style={s.section}>X. COSTOS Y TIEMPO DE ENTREGA</Text>
         <Text style={s.p}>
           USA Latino Prime ofrece dos modalidades de reforzamiento para su
           expediente:
@@ -339,8 +431,8 @@ function InformeDoc({ cliente, informe, fecha }: InformeDocProps) {
           * Sujeto a disponibilidad del abogado revisor.
         </Text>
 
-        {/* VIII. Recomendación final */}
-        <Text style={s.section}>VIII. RECOMENDACIÓN FINAL</Text>
+        {/* XI. Recomendación final */}
+        <Text style={s.section}>XI. RECOMENDACIÓN FINAL</Text>
         <Paragraphs text={informe.recomendacionFinal} />
 
         <View style={s.box} wrap={false}>
@@ -373,11 +465,42 @@ function InformeDoc({ cliente, informe, fecha }: InformeDocProps) {
         <Text style={{ fontSize: 8.5, color: MUTED }}>
           Highland, Utah — Estados Unidos
         </Text>
-        <Text style={{ fontSize: 7.5, color: MUTED, marginTop: 10, fontFamily: "Times-Italic" }}>
-          Informe preparado con apoyo de inteligencia artificial y el criterio
-          metodológico de USA Latino Prime. Este documento es informativo y no
-          constituye asesoría legal.
-        </Text>
+        {/* Aviso legal final */}
+        <View
+          wrap={false}
+          style={{
+            marginTop: 16,
+            borderWidth: 1,
+            borderColor: LINE,
+            backgroundColor: ROW_BG,
+            padding: 12,
+          }}
+        >
+          <Text
+            style={{
+              fontFamily: "Helvetica-Bold",
+              fontSize: 8.5,
+              color: NAVY,
+              letterSpacing: 1,
+              marginBottom: 4,
+            }}
+          >
+            AVISO IMPORTANTE
+          </Text>
+          <Text style={{ fontSize: 8.5, color: INK, textAlign: "justify" }}>
+            Este informe NO constituye asesoría legal ni recomendación jurídica, y no
+            crea una relación abogado-cliente. Es únicamente información educativa y de
+            preparación, elaborada a partir de los documentos proporcionados por el
+            cliente y de información disponible en páginas oficiales del gobierno de los
+            Estados Unidos (USCIS, Departamento de Justicia/EOIR y Departamento de
+            Estado). Las leyes y criterios de inmigración cambian con frecuencia; los
+            resultados de cada caso dependen del adjudicador, la jurisdicción y la
+            evidencia. Para decisiones sobre su proceso, consulte a un abogado de
+            inmigración licenciado o a un representante acreditado por el Departamento
+            de Justicia. Informe preparado con apoyo de inteligencia artificial y el
+            criterio metodológico de USA Latino Prime.
+          </Text>
+        </View>
 
         {/* Pie de página */}
         <View style={s.footer} fixed>

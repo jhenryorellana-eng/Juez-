@@ -27,6 +27,36 @@ export async function GET() {
     materia:
       "Asilo, Withholding of Removal y protección bajo la Convención contra la Tortura (CAT)",
     paisDetectado: "Venezuela",
+    miedoCreible: {
+      analisis:
+        "El relato transmite un temor genuino, anclado en una detención real y verificable. Sin embargo, tal como está redactado hoy, un Oficial de Asilo percibiría un miedo descrito en términos generales: falta la dimensión personal (qué pensó, qué decidió, cómo cambió su vida diaria) que convierte un incidente en un temor creíble y continuo.",
+      subjetivo:
+        "El temor subjetivo se afirma pero no se muestra: conviene narrar las reacciones concretas (dejar de dormir en casa, cambiar rutas, cerrar redes sociales) con fechas y consecuencias.",
+      objetivo:
+        "La base objetiva es sólida si se anexa el informe de país del Departamento de Estado sobre detenciones arbitrarias del SEBIN, conectándolo con el perfil estudiantil del solicitante.",
+      nexo:
+        "El nexo con la opinión política existe pero debe formularse expresamente: la detención siguió a la marcha del 12 de febrero y los agentes mencionaron su liderazgo estudiantil.",
+    },
+    investigacionPais: {
+      resumen:
+        "Los solicitantes venezolanos han mantenido tasas de aprobación superiores al promedio en los tribunales de inmigración, especialmente en casos con teoría de opinión política documentada con evidencia de militancia y represalias estatales.",
+      casos: [
+        {
+          referencia: "Asilo por opinión política (EOIR, FY2024)",
+          resumen:
+            "Casos ganados de líderes estudiantiles con detenciones documentadas: la clave fue la corroboración médica y el nexo explícito entre la actividad política y la represalia.",
+        },
+        {
+          referencia: "Matter of Mogharrabi (BIA 1987)",
+          resumen:
+            "Precedente del estándar de temor fundado: basta una posibilidad razonable de persecución, no una certeza.",
+        },
+      ],
+      fuentes: [
+        "https://www.justice.gov/eoir/page/file/asylum-statistics",
+        "https://www.state.gov/reports/2024-country-reports-on-human-rights-practices/venezuela/",
+      ],
+    },
     estadoActual:
       "El caso presenta una situación seria de amenazas, detención arbitraria y temor a daño físico por parte de agentes estatales (SEBIN) en Venezuela, en represalia por el liderazgo estudiantil del solicitante.\n\nEl punto más fuerte del expediente es el reporte médico que corrobora las lesiones sufridas durante la detención, junto con recortes de prensa que documentan el perfil político del solicitante. No obstante, el expediente necesita mayor desarrollo legal: las discrepancias de fechas entre la entrevista de miedo creíble y la declaración escrita podrían ser interpretadas por el juez como un problema de credibilidad bajo la ley REAL ID.",
     debilidades: [
@@ -45,6 +75,25 @@ export async function GET() {
           "Documentar la temporalidad del tránsito: ausencia de estatus legal, imposibilidad de protección efectiva y la intención permanente de llegar a un lugar seguro.",
       },
     ],
+    guiaDetalles: {
+      introduccion:
+        "Los jueces de inmigración no deciden por la gravedad general de la historia sino por su nivel de detalle y consistencia. Un relato específico, en orden cronológico y siempre igual en cada versión, es lo que la ley considera creíble.",
+      ejemploVago: "Unos hombres me amenazaron cerca de mi casa y me dijeron que dejara de participar.",
+      ejemploDetallado:
+        "El [fecha] alrededor de las [hora aproximada], dos hombres bajaron de una camioneta [color y modelo] sin placas frente a mi casa en [barrio/calle]. El más alto, de unos [edad] años, con [rasgo: cicatriz, tatuaje, uniforme], me llamó por mi nombre y me dijo: '[palabras exactas que recuerde]'. Yo sentí [reacción] e hice [qué hizo inmediatamente después].",
+      puntos: [
+        {
+          titulo: "La detención de marzo: el lugar",
+          instruccion:
+            "Describa la celda: tamaño, cuántas personas había, qué podía ver y oír, qué le decían los agentes y con qué palabras.",
+        },
+        {
+          titulo: "Los agentes del SEBIN",
+          instruccion:
+            "Anote cuántos eran, edades aproximadas, uniformes o ropa, y cualquier nombre, apodo o rango que haya escuchado.",
+        },
+      ],
+    },
     reforzamiento: [
       "Revisión completa del Formulario I-589.",
       "Revisión y ampliación de la declaración personal.",

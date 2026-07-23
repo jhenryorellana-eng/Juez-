@@ -5,6 +5,7 @@ import {
   buildEvaluationSystemPrompt,
   buildEvaluationUserPrompt,
   buildInformeSystemPrompt,
+  buildCountryResearchPrompt,
 } from "./prompts";
 
 /** Modelos elegidos según la página de precios de Gemini (solo 3.x). */
@@ -203,11 +204,139 @@ export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
   }
 }
 
+/** Resultado de la investigación en internet sobre el país del solicitante. */
+export interface CountryResearch {
+  texto: string;
+  fuentes: string[];
+}
+
+/**
+ * Detecta el país de origen leyendo el expediente (solo cuando el cliente no lo dio).
+ * Llamada corta y barata con el modelo lite.
+ */
+async function detectCountry(parts: Part[]): Promise<string> {
+  const client = getClient();
+  if (!client) return "";
+  try {
+    const response = await client.models.generateContent({
+      model: MODELS.judgeFallback,
+      contents: [
+        ...parts,
+        {
+          text: "¿Cuál es el país de origen del solicitante de asilo según estos documentos? Responde SOLO el nombre del país en español, sin nada más. Si no consta, responde exactamente: desconocido",
+        },
+      ],
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+        temperature: 0,
+      },
+    });
+    const pais = (response.text ?? "").trim().split("\n")[0].slice(0, 40);
+    return /desconocido/i.test(pais) ? "" : pais;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Busca en internet (Google Search grounding) casos de asilo GANADOS del país del
+ * solicitante, priorizando fuentes oficiales del gobierno de EE. UU. Si la búsqueda
+ * falla, el informe se genera igualmente sin esta sección enriquecida.
+ */
+export async function researchCountryCases(pais: string): Promise<CountryResearch | null> {
+  const client = getClient();
+  if (!client || !pais) return null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await client.models.generateContent({
+        model: MODELS.judge,
+        contents: [{ text: buildCountryResearchPrompt(pais) }],
+        config: {
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          temperature: 0.3,
+        },
+      });
+      const texto = (response.text ?? "").trim();
+      if (!texto) return null;
+
+      // El título del chunk es el dominio legible (ej. "justice.gov"); la URI es un
+      // redirect opaco de vertexaisearch, inservible en un documento impreso.
+      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+      const fuentes = [
+        ...new Set(
+          chunks
+            .map((c) => (c.web?.title || c.web?.uri || "").trim())
+            .filter((f) => f.length > 0),
+        ),
+      ].slice(0, 6);
+      return { texto, fuentes };
+    } catch (err) {
+      if (attempt === 0 && isRetryable(err)) {
+        await sleep(900);
+        continue;
+      }
+      console.error("[gemini:research] búsqueda fallida:", (err as Error).message);
+      return null;
+    }
+  }
+  return null;
+}
+
 /** Campos adicionales del informe premium sobre el schema del diagnóstico. */
 const INFORME_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
     ...VERDICT_SCHEMA.properties,
+    miedoCreible: {
+      type: Type.OBJECT,
+      properties: {
+        analisis: { type: Type.STRING },
+        subjetivo: { type: Type.STRING },
+        objetivo: { type: Type.STRING },
+        nexo: { type: Type.STRING },
+      },
+      required: ["analisis", "subjetivo", "objetivo", "nexo"],
+    },
+    investigacionPais: {
+      type: Type.OBJECT,
+      properties: {
+        resumen: { type: Type.STRING },
+        casos: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              referencia: { type: Type.STRING },
+              resumen: { type: Type.STRING },
+            },
+            required: ["referencia", "resumen"],
+          },
+        },
+      },
+      required: ["resumen", "casos"],
+    },
+    guiaDetalles: {
+      type: Type.OBJECT,
+      properties: {
+        introduccion: { type: Type.STRING },
+        ejemploVago: { type: Type.STRING },
+        ejemploDetallado: { type: Type.STRING },
+        puntos: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              titulo: { type: Type.STRING },
+              instruccion: { type: Type.STRING },
+            },
+            required: ["titulo", "instruccion"],
+          },
+        },
+      },
+      required: ["introduccion", "ejemploVago", "ejemploDetallado", "puntos"],
+    },
     materia: { type: Type.STRING },
     paisDetectado: { type: Type.STRING },
     estadoActual: { type: Type.STRING },
@@ -242,6 +371,9 @@ const INFORME_SCHEMA: Schema = {
   },
   required: [
     ...(VERDICT_SCHEMA.required ?? []),
+    "miedoCreible",
+    "investigacionPais",
+    "guiaDetalles",
     "materia",
     "paisDetectado",
     "estadoActual",
@@ -269,8 +401,13 @@ export async function generateInforme(
     { text: buildEvaluationUserPrompt(docs.length) },
   ];
 
+  // País del cliente, o detectado en el expediente; con él se investiga en internet
+  // el panorama de casos ganados (si falla, el informe sale sin esa investigación).
+  const pais = cliente.pais.trim() || (await detectCountry(parts));
+  const research = await researchCountryCases(pais);
+
   const baseConfig = {
-    systemInstruction: buildInformeSystemPrompt(cliente.nombre, cliente.pais),
+    systemInstruction: buildInformeSystemPrompt(cliente.nombre, pais, research?.texto),
     responseMimeType: "application/json",
     responseSchema: INFORME_SCHEMA,
     temperature: 0.4,
@@ -283,7 +420,7 @@ export async function generateInforme(
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } },
       retries: 2,
     });
-    return normalizeInforme(informe);
+    return normalizeInforme(informe, research?.fuentes ?? []);
   } catch (err) {
     if (!isRetryable(err)) throw err;
     const informe = await generateJson<Informe>({
@@ -292,14 +429,32 @@ export async function generateInforme(
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 1,
     });
-    return normalizeInforme(informe);
+    return normalizeInforme(informe, research?.fuentes ?? []);
   }
 }
 
-function normalizeInforme(i: Informe): Informe {
+function normalizeInforme(i: Informe, fuentes: string[]): Informe {
   const base = normalizeVerdict(i);
   return {
     ...base,
+    miedoCreible: {
+      analisis: i.miedoCreible?.analisis ?? "",
+      subjetivo: i.miedoCreible?.subjetivo ?? "",
+      objetivo: i.miedoCreible?.objetivo ?? "",
+      nexo: i.miedoCreible?.nexo ?? "",
+    },
+    investigacionPais: {
+      resumen: i.investigacionPais?.resumen ?? "",
+      casos: (i.investigacionPais?.casos ?? []).slice(0, 5),
+      // Las fuentes vienen SIEMPRE del grounding real de la búsqueda, no del modelo.
+      fuentes,
+    },
+    guiaDetalles: {
+      introduccion: i.guiaDetalles?.introduccion ?? "",
+      ejemploVago: i.guiaDetalles?.ejemploVago ?? "",
+      ejemploDetallado: i.guiaDetalles?.ejemploDetallado ?? "",
+      puntos: (i.guiaDetalles?.puntos ?? []).slice(0, 10),
+    },
     materia: i.materia?.trim() || "Asilo y protecciones relacionadas",
     paisDetectado: i.paisDetectado ?? "",
     estadoActual: i.estadoActual ?? "",

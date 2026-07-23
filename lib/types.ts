@@ -62,6 +62,54 @@ export interface NormaLegal {
   texto: string;
 }
 
+/** Análisis dedicado del miedo creíble (credible fear) del expediente. */
+export interface MiedoCreible {
+  /** Evaluación general de cómo se sostiene el miedo creíble hoy (1-2 párrafos). */
+  analisis: string;
+  /** Temor subjetivo: qué tan demostrado está en el relato y cómo mejorarlo. */
+  subjetivo: string;
+  /** Base objetiva: condiciones del país y hechos que la respaldan (o le faltan). */
+  objetivo: string;
+  /** Nexo con el motivo protegido: qué tan claro está y cómo reforzarlo. */
+  nexo: string;
+}
+
+/** Caso o precedente GANADO relevante para el país del solicitante. */
+export interface CasoGanado {
+  /** Ej. "Matter of Mogharrabi" o "Asilo político otorgado (Venezuela, EOIR 2024)". */
+  referencia: string;
+  /** Qué se ganó, por qué, y qué puede aprender este expediente de ello. */
+  resumen: string;
+}
+
+/** Panorama de casos ganados del país del solicitante (con búsqueda en internet). */
+export interface InvestigacionPais {
+  /** Contexto: tasas de aprobación y teorías legales que han prosperado. */
+  resumen: string;
+  casos: CasoGanado[];
+  /** URLs de las fuentes consultadas (rellenadas por el servidor desde la búsqueda). */
+  fuentes: string[];
+}
+
+/** Punto de la guía de detalles: estructura que el cliente llena con SU historia. */
+export interface PuntoGuia {
+  /** Ej. "Nombres y descripción de los agresores". */
+  titulo: string;
+  /** Instrucción concreta, referida a los hechos de SU expediente. */
+  instruccion: string;
+}
+
+/** Guía de detalles: qué buscan los jueces de inmigración y cómo relatarlo. */
+export interface GuiaDetalles {
+  /** Por qué los adjudicadores buscan detalles y consistencia cronológica. */
+  introduccion: string;
+  /** Frase vaga tomada o inspirada del propio relato del cliente. */
+  ejemploVago: string;
+  /** La misma frase enriquecida con el nivel de detalle que busca un juez. */
+  ejemploDetallado: string;
+  puntos: PuntoGuia[];
+}
+
 /** Contenido generado por la IA para el informe premium (además del Verdict). */
 export interface Informe extends Verdict {
   /** Ej. "Asilo, Withholding of Removal y protección bajo la CAT". */
@@ -70,8 +118,14 @@ export interface Informe extends Verdict {
   paisDetectado: string;
   /** II. Estado actual del caso (2-3 párrafos, separados por \n\n). */
   estadoActual: string;
-  /** III. Debilidades identificadas, desarrolladas. */
+  /** III. Análisis dedicado del miedo creíble. */
+  miedoCreible: MiedoCreible;
+  /** IV. Casos ganados del país del solicitante (investigación con internet). */
+  investigacionPais: InvestigacionPais;
+  /** V. Debilidades identificadas, desarrolladas. */
   debilidades: Debilidad[];
+  /** VI. Guía de detalles para el relato (estructura que llena el cliente). */
+  guiaDetalles: GuiaDetalles;
   /** IV. Alcance del reforzamiento recomendado. */
   reforzamiento: string[];
   /** V. Normas legales y precedentes aplicables. */
@@ -97,4 +151,40 @@ export interface ProJob {
 
 export type ProResult =
   | { status: "done"; informe: Informe; pdfUrl: string; cliente: ClienteInfo }
+  | { status: "error"; error: string };
+
+/* ------------------------------------------------------------------ */
+/*  Integración /xlegal (variante embebida en x-legal, sin pago)       */
+/* ------------------------------------------------------------------ */
+
+/** Session as reported by x-legal (source of truth for attempts and PDF). */
+export interface XlegalSession {
+  cliente: ClienteInfo;
+  attemptsAllowed: number;
+  attemptsUsed: number;
+  /** Unknown values are treated as "active" by the consumer. */
+  status: "active" | "delivered" | "expired";
+  pdf: { available: boolean; downloadUrl?: string };
+}
+
+/** Job stored in the blob store while an /xlegal evaluation runs. */
+export interface XlegalJob {
+  status: "pending" | "processing";
+  /** sha256 hex of the session token — the token itself is never persisted. */
+  tokenHash: string;
+  cliente: ClienteInfo;
+  files: Array<{ url: string; name: string }>;
+  createdAt: string;
+}
+
+export type XlegalResult =
+  | {
+      status: "done";
+      informe: Informe;
+      pdfUrl: string;
+      cliente: ClienteInfo;
+      completedAt: string;
+      /** false until x-legal acknowledged the webhook with a 2xx. */
+      webhookDelivered: boolean;
+    }
   | { status: "error"; error: string };

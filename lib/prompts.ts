@@ -151,7 +151,11 @@ pantalla móvil):
  * USA Latino Prime (modelo: informe Vivanco Franco). Ejecutado por gemini-3.5-flash
  * con thinking MEDIUM (corre en segundo plano, la latencia no es problema).
  */
-export function buildInformeSystemPrompt(clienteNombre: string, clientePais: string): string {
+export function buildInformeSystemPrompt(
+  clienteNombre: string,
+  clientePais: string,
+  investigacion?: string,
+): string {
   return `${buildEvaluationSystemPrompt()}
 
 <informe_premium>
@@ -186,7 +190,84 @@ Campos adicionales del JSON:
 - "opcionRecomendada": "plataforma" (US $400) o "abogado" (US $650, recomendable cuando
   hay puntos legales delicados: nexo débil, credibilidad crítica, barras o apelación).
 - "opcionJustificacion": 1 frase justificando esa opción.
-</informe_premium>`;
+
+- "miedoCreible": ANÁLISIS DEDICADO del miedo creíble (credible fear). Es una lectura
+  profunda del relato, no un resumen del diagnóstico:
+  · "analisis": 1-2 párrafos evaluando cómo se sostiene HOY el miedo creíble del cliente
+    ante un Oficial de Asilo o juez: qué transmite el relato, qué le falta, y cómo se
+    percibiría en una entrevista o audiencia real.
+  · "subjetivo": el temor subjetivo — ¿el relato transmite miedo genuino y personal, con
+    reacciones, decisiones y consecuencias concretas del propio cliente? Qué falta.
+  · "objetivo": la base objetiva — ¿los hechos y las condiciones del país hacen razonable
+    ese temor (estándar de posibilidad razonable, INS v. Cardoza-Fonseca)? Qué evidencia
+    de condiciones del país conviene anexar y qué hecho respaldaría.
+  · "nexo": ¿el miedo está conectado con claridad a un motivo protegido, o se lee como
+    violencia generalizada? Cómo formular esa conexión con los hechos REALES del caso.
+
+- "investigacionPais": panorama de casos GANADOS de solicitantes del mismo país:
+  · "resumen": 1-2 párrafos sobre cómo les ha ido a los solicitantes de ese país
+    (tasas de aprobación si constan en el contexto de investigación, teorías legales que
+    han prosperado, tipo de evidencia que marcó la diferencia).
+  · "casos": 3-5 casos o precedentes GANADOS relevantes, cada uno con "referencia" y
+    "resumen" (qué se ganó, por qué, y qué puede aprender ESTE expediente de ello).
+  REGLAS ESTRICTAS: usa EXCLUSIVAMENTE el contexto de investigación provisto en
+  <investigacion_pais> si existe. Si un dato (tasa, cifra, caso) no consta ahí ni es un
+  precedente publicado que conoces con certeza (Matter of ..., casos de circuito), NO lo
+  incluyas ni lo inventes; en su lugar dilo ("no consta en las fuentes consultadas").
+  Jamás inventes estadísticas ni nombres de casos.
+
+- "guiaDetalles": GUÍA DE DETALLES para el relato. Los adjudicadores de inmigración
+  deciden credibilidad por el DETALLE y la CONSISTENCIA (REAL ID Act): nombres, fechas,
+  horas, lugares exactos, descripciones físicas de las personas, colores y modelos de
+  vehículos, qué se dijo palabra por palabra, en qué orden pasó todo. Un relato específico
+  y cronológico es creíble; uno generalizado no.
+  · "introduccion": 1 párrafo explicando esto al cliente en lenguaje llano.
+  · "ejemploVago": UNA frase vaga tomada (o parafraseada) del PROPIO relato del cliente.
+  · "ejemploDetallado": la MISMA escena reescrita como ejemplo del nivel de detalle que
+    busca un juez (fecha aproximada, hora, lugar, nombres o apodos, descripción de las
+    personas, vehículo si lo hubo, palabras dichas, qué sintió e hizo el cliente).
+    IMPORTANTE: es una PLANTILLA ilustrativa — usa los hechos que sí constan y marca los
+    huecos con corchetes para que el cliente los llene con SU verdad (ej. "[hora
+    aproximada]", "[nombre o apodo]", "[color y modelo del vehículo]"). No inventes datos
+    como si fueran reales.
+  · "puntos": 6-10 puntos de guía referidos a los hechos de SU expediente, cada uno con
+    "titulo" e "instruccion" concreta (ej. si el relato menciona una detención: "Describe
+    el lugar de detención: cómo era la celda, cuántas personas había, qué podías ver y
+    oír"). Son ESTRUCTURAS para que el cliente escriba su propia historia en orden
+    cronológico — nunca respuestas prefabricadas ni hechos sugeridos.
+  Recuerda en la guía: la verdad es innegociable; el detalle documenta lo que ya pasó,
+  no lo embellece.
+</informe_premium>${investigacion ? `
+
+<investigacion_pais>
+Resultado de la búsqueda en internet (fuentes oficiales del gobierno de EE. UU. y
+precedentes publicados) sobre casos de asilo del país del solicitante. Úsalo como ÚNICA
+fuente de estadísticas y casos recientes para "investigacionPais":
+
+${investigacion}
+</investigacion_pais>` : ""}`;
+}
+
+/**
+ * Prompt de la búsqueda con Google (grounding) sobre casos ganados del país.
+ * Se ejecuta ANTES del informe; su salida se inyecta en <investigacion_pais>.
+ */
+export function buildCountryResearchPrompt(pais: string): string {
+  return `Investiga en internet, dando prioridad ABSOLUTA a páginas oficiales del gobierno
+de los Estados Unidos (justice.gov/eoir, uscis.gov, state.gov, dhs.gov) y a precedentes
+publicados (BIA, cortes de circuito), sobre solicitudes de ASILO de personas de ${pais}:
+
+1. Tasas o cifras de aprobación de asilo para nacionales de ${pais} (estadísticas de
+   EOIR/DOJ o USCIS; indica el año fiscal de cada cifra).
+2. Casos o precedentes GANADOS relevantes para solicitantes de ${pais}: qué teoría legal
+   prosperó (opinión política, grupo social particular, religión...), y qué evidencia o
+   argumento marcó la diferencia.
+3. Condiciones del país citadas en decisiones favorables (informes del Departamento de
+   Estado u otros documentos oficiales).
+
+Responde en español, en texto claro y compacto (máximo ~500 palabras), citando la fuente
+de cada dato. Si un dato no aparece en fuentes confiables, di expresamente que no consta.
+NO inventes cifras ni nombres de casos.`;
 }
 
 /** Instrucción que acompaña a los documentos (PDF adjuntos o texto extraído). */
