@@ -22,6 +22,7 @@ import FilePicker from "@/components/FilePicker";
 import PulseLine from "@/components/ui/PulseLine";
 import { BRAND } from "@/lib/brand";
 import { INFORME_PRICE_USD } from "@/lib/stripe-shared";
+import { DIRECT_TOTAL_BYTES } from "@/lib/analysis";
 
 const INCLUYE = [
   { icon: Scale, text: "Probabilidad de aprobación con el criterio de un juez" },
@@ -57,29 +58,43 @@ function ProFlow() {
   async function pagar() {
     setError(null);
     try {
-      // 1) Subir documentos directo a Blob (evita el límite de 4.5 MB del borde).
-      const refs: Array<{ url: string; name: string }> = [];
-      for (const [i, f] of files.entries()) {
-        setSending(`Subiendo documento ${i + 1} de ${files.length}…`);
-        const blob = await upload(`casos/${f.name}`, f, {
-          access: "public",
-          handleUploadUrl: "/api/upload",
-        });
-        refs.push({ url: blob.url, name: f.name });
-      }
+      const total = files.reduce((sum, f) => sum + f.size, 0);
+      let res: Response;
 
-      // 2) Registrar el trabajo y crear la sesión de pago.
-      setSending("Preparando el pago seguro…");
-      const res = await fetch("/api/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          nombre: nombre.trim(),
-          email: email.trim(),
-          pais: pais.trim(),
-          files: refs,
-        }),
-      });
+      if (total <= DIRECT_TOTAL_BYTES) {
+        // Camino directo: los archivos caben en la propia solicitud.
+        setSending("Enviando tus documentos…");
+        const form = new FormData();
+        form.set("nombre", nombre.trim());
+        form.set("email", email.trim());
+        form.set("pais", pais.trim());
+        for (const f of files) form.append("file", f, f.name);
+        res = await fetch("/api/checkout", { method: "POST", body: form });
+      } else {
+        // 1) Subir documentos directo a Blob (evita el límite de 4.5 MB del borde).
+        const refs: Array<{ url: string; name: string }> = [];
+        for (const [i, f] of files.entries()) {
+          setSending(`Subiendo documento ${i + 1} de ${files.length}…`);
+          const blob = await upload(`casos/${f.name}`, f, {
+            access: "public",
+            handleUploadUrl: "/api/upload",
+          });
+          refs.push({ url: blob.url, name: f.name });
+        }
+
+        // 2) Registrar el trabajo y crear la sesión de pago.
+        setSending("Preparando el pago seguro…");
+        res = await fetch("/api/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            nombre: nombre.trim(),
+            email: email.trim(),
+            pais: pais.trim(),
+            files: refs,
+          }),
+        });
+      }
       const data = (await res.json().catch(() => ({}))) as {
         url?: string;
         error?: string;

@@ -23,7 +23,12 @@ yarn-error.log*
 .env
 .env.local
 .env*.local
+.env.local.bak
 
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# almacén local de pruebas (flujo premium sin Blob)
+/.dev-store/
+.playwright-mcp/

@@ -1,21 +1,25 @@
 import { NextResponse } from "next/server";
-import { put } from "@vercel/blob";
 import { createCheckoutSession, stripeConfigured } from "@/lib/stripe";
+import { storageAvailable, storagePut } from "@/lib/storage";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
-import { MAX_FILES } from "@/lib/analysis";
+import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 import type { ClienteInfo, ProJob } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface CheckoutBody {
-  nombre?: string;
-  email?: string;
-  pais?: string;
-  files?: Array<{ url: string; name: string }>;
+interface CheckoutFields {
+  nombre: string;
+  email: string;
+  pais: string;
 }
 
-/** Crea el trabajo premium pendiente y la sesión de pago de $50. */
+/**
+ * Crea el trabajo premium pendiente y la sesión de pago de $50.
+ * - multipart/form-data → los archivos vienen en la propia solicitud (total
+ *   bajo el límite del borde de Vercel); el servidor los guarda él mismo.
+ * - application/json    → refs de archivos ya subidos a Vercel Blob.
+ */
 export async function POST(request: Request) {
   const limit = rateLimit(`checkout:${getClientIp(request)}`, 5);
   if (!limit.ok) {
@@ -25,26 +29,40 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  if (!storageAvailable()) {
     return NextResponse.json(
       { error: "El servicio premium no está habilitado (falta el Blob store de Vercel)." },
       { status: 501 },
     );
   }
 
-  let body: CheckoutBody;
+  const jobId = crypto.randomUUID();
+  const contentType = request.headers.get("content-type") ?? "";
+
+  let fields: CheckoutFields;
+  let files: Array<{ url: string; name: string }>;
   try {
-    body = (await request.json()) as CheckoutBody;
-  } catch {
+    if (contentType.includes("application/json")) {
+      const parsed = await parseJsonBody(request);
+      fields = parsed.fields;
+      files = parsed.files;
+    } else {
+      const parsed = await parseMultipartBody(request, jobId);
+      fields = parsed.fields;
+      files = parsed.files;
+    }
+  } catch (error) {
+    const message = (error as Error).message ?? "";
+    if (message.startsWith("VALIDATION:")) {
+      return NextResponse.json({ error: message.slice(11) }, { status: 400 });
+    }
+    console.error("[checkout] error leyendo la solicitud:", message);
     return NextResponse.json({ error: "Solicitud inválida." }, { status: 400 });
   }
 
-  const nombre = (body.nombre ?? "").trim().slice(0, 120);
-  const email = (body.email ?? "").trim().slice(0, 200);
-  const pais = (body.pais ?? "").trim().slice(0, 80);
-  const files = (body.files ?? []).filter(
-    (f) => typeof f?.url === "string" && typeof f?.name === "string",
-  );
+  const nombre = fields.nombre.trim().slice(0, 120);
+  const email = fields.email.trim().slice(0, 200);
+  const pais = fields.pais.trim().slice(0, 80);
 
   if (nombre.length < 3) {
     return NextResponse.json({ error: "Escribe tu nombre completo." }, { status: 400 });
@@ -58,20 +76,8 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  for (const f of files) {
-    let host: string;
-    try {
-      host = new URL(f.url).hostname;
-    } catch {
-      return NextResponse.json({ error: "URL de archivo inválida." }, { status: 400 });
-    }
-    if (!host.endsWith(".blob.vercel-storage.com")) {
-      return NextResponse.json({ error: "URL de archivo no permitida." }, { status: 400 });
-    }
-  }
 
   const cliente: ClienteInfo = { nombre, email, pais };
-  const jobId = crypto.randomUUID();
   const job: ProJob = {
     status: "pending",
     cliente,
@@ -80,11 +86,7 @@ export async function POST(request: Request) {
   };
 
   try {
-    await put(`pro/jobs/${jobId}.json`, JSON.stringify(job), {
-      access: "public",
-      contentType: "application/json",
-      addRandomSuffix: false,
-    });
+    await storagePut(`pro/jobs/${jobId}.json`, JSON.stringify(job), "application/json");
   } catch (error) {
     console.error("[checkout] no se pudo guardar el trabajo:", (error as Error).message);
     return NextResponse.json(
@@ -117,6 +119,75 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
+}
+
+/** Camino JSON: los archivos ya están en Vercel Blob; validamos las refs. */
+async function parseJsonBody(request: Request): Promise<{
+  fields: CheckoutFields;
+  files: Array<{ url: string; name: string }>;
+}> {
+  const body = (await request.json()) as {
+    nombre?: string;
+    email?: string;
+    pais?: string;
+    files?: Array<{ url: string; name: string }>;
+  };
+  const files = (body.files ?? []).filter(
+    (f) => typeof f?.url === "string" && typeof f?.name === "string",
+  );
+  for (const f of files) {
+    let host: string;
+    try {
+      host = new URL(f.url).hostname;
+    } catch {
+      throw new Error("VALIDATION:URL de archivo inválida.");
+    }
+    if (!host.endsWith(".blob.vercel-storage.com")) {
+      throw new Error("VALIDATION:URL de archivo no permitida.");
+    }
+  }
+  return {
+    fields: { nombre: body.nombre ?? "", email: body.email ?? "", pais: body.pais ?? "" },
+    files,
+  };
+}
+
+/** Camino multipart: guardamos los archivos nosotros (Blob o almacén local). */
+async function parseMultipartBody(
+  request: Request,
+  jobId: string,
+): Promise<{ fields: CheckoutFields; files: Array<{ url: string; name: string }> }> {
+  const form = await request.formData();
+  const entries = form
+    .getAll("file")
+    .filter((e): e is File => e instanceof File && e.size > 0);
+
+  if (entries.length > MAX_FILES) {
+    throw new Error(`VALIDATION:Máximo ${MAX_FILES} documentos por informe.`);
+  }
+
+  const files: Array<{ url: string; name: string }> = [];
+  for (const [i, file] of entries.entries()) {
+    if (file.size > MAX_FILE_BYTES) {
+      throw new Error(`VALIDATION:"${file.name}" supera los ${MAX_FILE_MB} MB.`);
+    }
+    const safeName = file.name.replace(/[^\w. -]/g, "_");
+    const url = await storagePut(
+      `pro/docs/${jobId}/${i}-${safeName}`,
+      Buffer.from(await file.arrayBuffer()),
+      file.type || "application/octet-stream",
+    );
+    files.push({ url, name: file.name });
+  }
+
+  return {
+    fields: {
+      nombre: String(form.get("nombre") ?? ""),
+      email: String(form.get("email") ?? ""),
+      pais: String(form.get("pais") ?? ""),
+    },
+    files,
+  };
 }
 
 /** Origen público (detrás del proxy de Vercel). */
