@@ -24,6 +24,12 @@ export const maxDuration = 300;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/**
+ * A resumed job with no result yet is considered alive only within this window
+ * (maxDuration 300 s + margin). Older means the background task was killed.
+ */
+const RESUME_WINDOW_MS = 6 * 60_000;
+
 const jobPath = (jobId: string) => `xlegal/jobs/${jobId}.json`;
 const resultPath = (jobId: string) => `xlegal/results/${jobId}.json`;
 const tokenMapPath = (tokenHash: string) => `xlegal/tokens/${tokenHash}.json`;
@@ -172,12 +178,28 @@ export async function POST(request: Request) {
   }
 
   // Resume: a reload during/after generation reuses the same job, no new attempt.
+  // But only while the job is alive or delivered — a job that died without ever
+  // writing a result (killed after()) must NOT wedge the token forever: past the
+  // resume window we fall through and start a fresh job.
   const mapping = await storageReadJson<{ jobId: string }>(tokenMapPath(tokenHash));
   if (mapping?.jobId) {
     const prior = await storageReadJson<XlegalResult>(resultPath(mapping.jobId));
-    if (prior?.status !== "error") {
+    if (prior?.status === "done") {
       return NextResponse.json({ jobId: mapping.jobId }, { status: 202 });
     }
+    if (!prior) {
+      const priorJob = await storageReadJson<XlegalJob>(jobPath(mapping.jobId));
+      const age = priorJob?.createdAt
+        ? Date.now() - new Date(priorJob.createdAt).getTime()
+        : Infinity;
+      if (age < RESUME_WINDOW_MS) {
+        return NextResponse.json({ jobId: mapping.jobId }, { status: 202 });
+      }
+      console.error(
+        `[xlegal:run] stale job ${mapping.jobId} (no result after ${Math.round(age / 1000)}s) — starting fresh`,
+      );
+    }
+    // prior.status === "error" also falls through to a fresh job.
   }
 
   if (session.attemptsAllowed - session.attemptsUsed <= 0) {
@@ -253,7 +275,11 @@ async function processXlegalJob(
   origin: string,
 ): Promise<void> {
   try {
+    // Checkpoint logs: if the background task gets killed mid-flight, the last
+    // line in the Vercel logs tells us exactly which stage died.
+    console.log(`[xlegal:job] ${jobId} start (${job.files.length} docs)`);
     const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente);
+    console.log(`[xlegal:job] ${jobId} informe+pdf ready (score ${informe.score})`);
 
     // Local-dev storage returns a relative URL; the webhook consumer (x-legal
     // or the mock) needs an absolute one to download the PDF.
@@ -262,6 +288,7 @@ async function processXlegalJob(
       pdf,
       "application/pdf",
     );
+    console.log(`[xlegal:job] ${jobId} pdf stored`);
     const publicPdfUrl = storedPdfUrl.startsWith("/")
       ? `${origin}${storedPdfUrl}`
       : storedPdfUrl;
@@ -276,6 +303,7 @@ async function processXlegalJob(
       webhookDelivered: false,
     };
     await storagePut(resultPath(jobId), JSON.stringify(result), "application/json");
+    console.log(`[xlegal:job] ${jobId} result saved, delivering webhook`);
 
     const delivered = await deliverXlegalWebhook({
       event: "evaluation.completed",
@@ -290,6 +318,7 @@ async function processXlegalJob(
       },
     });
 
+    console.log(`[xlegal:job] ${jobId} webhook ${delivered ? "delivered" : "FAILED (reconciliation pending)"}`);
     if (delivered) {
       // x-legal stored the PDF: remove the client docs and our temporary copy.
       await storageDelete([...job.files.map((f) => f.url), storedPdfUrl]).catch(

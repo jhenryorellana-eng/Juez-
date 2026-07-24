@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "app/api/xlegal/run/route.ts": { "memory": 1769 },
+    "app/api/pro/run/route.ts": { "memory": 1769 }
+  }
+}
