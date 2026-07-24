@@ -59,10 +59,14 @@ export async function storagePut(
   contentType: string,
 ): Promise<string> {
   if (blobEnabled()) {
+    // allowOverwrite es imprescindible: los jobs y resultados se reescriben en
+    // el mismo pathname (pending→processing, done→webhookDelivered) y sin él
+    // Vercel Blob lanza excepción en el segundo put.
     const blob = await put(pathname, data, {
       access: "public",
       contentType,
       addRandomSuffix: false,
+      allowOverwrite: true,
     });
     return blob.url;
   }
