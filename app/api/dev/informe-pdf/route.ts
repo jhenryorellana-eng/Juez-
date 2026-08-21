@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
 import { renderInformePdf } from "@/lib/informe-pdf";
-import type { Informe } from "@/lib/types";
+import type { Informe, InformeVariant } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Vista previa del PDF con datos de muestra. SOLO en desarrollo. */
-export async function GET() {
+/**
+ * Vista previa del PDF con datos de muestra. SOLO en desarrollo.
+ * ?variant=xlegal renderiza la variante sin bloques comerciales; cualquier otro
+ * valor (o ninguno) rinde la de /pro.
+ */
+export async function GET(req: Request) {
   if (process.env.NODE_ENV === "production") {
     return NextResponse.json({ error: "No disponible." }, { status: 404 });
   }
+
+  const variant: InformeVariant =
+    new URL(req.url).searchParams.get("variant") === "xlegal" ? "xlegal" : "pro";
 
   const informe: Informe = {
     score: 62,
@@ -140,12 +147,13 @@ export async function GET() {
     { nombre: "Juan José Vivanco Franco", email: "demo@example.com", pais: "Perú" },
     informe,
     "3 de julio de 2026",
+    variant,
   );
 
   return new NextResponse(new Uint8Array(pdf), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": 'inline; filename="informe-preview.pdf"',
+      "Content-Disposition": `inline; filename="informe-preview-${variant}.pdf"`,
     },
   });
 }

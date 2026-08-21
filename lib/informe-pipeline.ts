@@ -8,17 +8,22 @@ import { generateInforme, type PreparedDoc } from "./gemini";
 import { renderInformePdf } from "./informe-pdf";
 import { storageRead } from "./storage";
 import { MAX_FILE_BYTES } from "./analysis";
-import type { ClienteInfo, Informe } from "./types";
+import type { ClienteInfo, Informe, InformeVariant } from "./types";
 
 export interface FileRef {
   url: string;
   name: string;
 }
 
-/** Downloads the documents, generates the Informe and renders its PDF. */
+/**
+ * Downloads the documents, generates the Informe and renders its PDF.
+ * The variant defaults to "pro" so every existing caller keeps its behaviour:
+ * only /api/xlegal/run asks for the report without the commercial blocks.
+ */
 export async function buildInformeFromFiles(
   files: FileRef[],
   cliente: ClienteInfo,
+  { variant = "pro" }: { variant?: InformeVariant } = {},
 ): Promise<{ informe: Informe; pdf: Buffer }> {
   const docs: PreparedDoc[] = [];
   for (const ref of files) {
@@ -28,8 +33,13 @@ export async function buildInformeFromFiles(
     docs.push(await prepareDoc(ref.name, buffer));
   }
 
-  const informe = await generateInforme(docs, cliente);
-  const pdf = await renderInformePdf(cliente, informe, formatFechaEs(new Date()));
+  const informe = await generateInforme(docs, cliente, variant);
+  const pdf = await renderInformePdf(
+    cliente,
+    informe,
+    formatFechaEs(new Date()),
+    variant,
+  );
   return { informe, pdf };
 }
 

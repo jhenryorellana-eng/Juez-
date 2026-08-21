@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
 import type { Schema, ContentListUnion, Part } from "@google/genai";
-import type { Verdict, Informe, ClienteInfo } from "./types";
+import type { Verdict, Informe, ClienteInfo, InformeVariant } from "./types";
 import {
   buildEvaluationSystemPrompt,
   buildEvaluationUserPrompt,
@@ -285,7 +285,7 @@ export async function researchCountryCases(pais: string): Promise<CountryResearc
 }
 
 /** Campos adicionales del informe premium sobre el schema del diagnóstico. */
-const INFORME_SCHEMA: Schema = {
+const INFORME_BASE_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
     ...VERDICT_SCHEMA.properties,
@@ -366,8 +366,6 @@ const INFORME_SCHEMA: Schema = {
     },
     beneficios: { type: Type.ARRAY, items: { type: Type.STRING } },
     recomendacionFinal: { type: Type.STRING },
-    opcionRecomendada: { type: Type.STRING, enum: ["plataforma", "abogado"] },
-    opcionJustificacion: { type: Type.STRING },
   },
   required: [
     ...(VERDICT_SCHEMA.required ?? []),
@@ -382,10 +380,30 @@ const INFORME_SCHEMA: Schema = {
     "normas",
     "beneficios",
     "recomendacionFinal",
-    "opcionRecomendada",
-    "opcionJustificacion",
   ],
 };
+
+/**
+ * Schema del informe. Los campos de la tabla de costos SOLO existen en la variante
+ * "pro": si siguieran en "required" para /xlegal, el modelo tendría que razonar sobre
+ * precios y ese razonamiento se filtra al texto libre de "recomendacionFinal".
+ */
+function buildInformeSchema(variant: InformeVariant): Schema {
+  if (variant !== "pro") return INFORME_BASE_SCHEMA;
+  return {
+    ...INFORME_BASE_SCHEMA,
+    properties: {
+      ...INFORME_BASE_SCHEMA.properties,
+      opcionRecomendada: { type: Type.STRING, enum: ["plataforma", "abogado"] },
+      opcionJustificacion: { type: Type.STRING },
+    },
+    required: [
+      ...(INFORME_BASE_SCHEMA.required ?? []),
+      "opcionRecomendada",
+      "opcionJustificacion",
+    ],
+  };
+}
 
 /**
  * Genera el informe premium completo (diagnóstico + secciones del informe).
@@ -394,6 +412,7 @@ const INFORME_SCHEMA: Schema = {
 export async function generateInforme(
   docs: PreparedDoc[],
   cliente: ClienteInfo,
+  variant: InformeVariant = "pro",
 ): Promise<Informe> {
   const parts = await buildParts(docs);
   const contents: ContentListUnion = [
@@ -407,9 +426,14 @@ export async function generateInforme(
   const research = await researchCountryCases(pais);
 
   const baseConfig = {
-    systemInstruction: buildInformeSystemPrompt(cliente.nombre, pais, research?.texto),
+    systemInstruction: buildInformeSystemPrompt(
+      cliente.nombre,
+      pais,
+      research?.texto,
+      variant,
+    ),
     responseMimeType: "application/json",
-    responseSchema: INFORME_SCHEMA,
+    responseSchema: buildInformeSchema(variant),
     temperature: 0.4,
   };
 
@@ -420,7 +444,7 @@ export async function generateInforme(
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } },
       retries: 2,
     });
-    return normalizeInforme(informe, research?.fuentes ?? []);
+    return normalizeInforme(informe, research?.fuentes ?? [], variant);
   } catch (err) {
     if (!isRetryable(err)) throw err;
     const informe = await generateJson<Informe>({
@@ -429,11 +453,11 @@ export async function generateInforme(
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 1,
     });
-    return normalizeInforme(informe, research?.fuentes ?? []);
+    return normalizeInforme(informe, research?.fuentes ?? [], variant);
   }
 }
 
-function normalizeInforme(i: Informe, fuentes: string[]): Informe {
+function normalizeInforme(i: Informe, fuentes: string[], variant: InformeVariant): Informe {
   const base = normalizeVerdict(i);
   return {
     ...base,
@@ -463,8 +487,14 @@ function normalizeInforme(i: Informe, fuentes: string[]): Informe {
     normas: (i.normas ?? []).slice(0, 7),
     beneficios: (i.beneficios ?? []).slice(0, 8),
     recomendacionFinal: i.recomendacionFinal ?? "",
-    opcionRecomendada: i.opcionRecomendada === "plataforma" ? "plataforma" : "abogado",
-    opcionJustificacion: i.opcionJustificacion ?? "",
+    // En /xlegal ni siquiera se guardan: el informe no vende modalidades.
+    ...(variant === "pro"
+      ? {
+          opcionRecomendada:
+            i.opcionRecomendada === "plataforma" ? "plataforma" : "abogado",
+          opcionJustificacion: i.opcionJustificacion ?? "",
+        }
+      : {}),
   };
 }
 

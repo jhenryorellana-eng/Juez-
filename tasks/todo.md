@@ -173,6 +173,41 @@ $400/$650 tal cual el ejemplo.
 - [ ] PENDIENTE (usuario): STRIPE_SECRET_KEY en Vercel + Blob store (obligatorios
       para el premium en producción).
 
+## v7 — El informe de `/xlegal` sin bloques comerciales ✅ (2026-08-20)
+Por qué (no es estética): el cliente de `/xlegal` llega desde x-legal con un contrato único
+que YA cubre el reforzamiento, así que ponerle precios dentro del entregable le vende lo
+que ya compró; y ofrecer "reforzamiento con revisión de abogado" como servicio propio
+contradice el `AVISO IMPORTANTE` que el propio informe imprime al pie ("no crea una
+relación abogado-cliente"). En `/pro` el cliente paga SOLO la evaluación: ahí la tabla
+$400/$650 es el modelo de negocio y se queda tal cual.
+- [x] `InformeVariant = "pro" | "xlegal"` hilado por el pipeline con default `"pro"`
+      (`buildInformeFromFiles` → `generateInforme` → `renderInformePdf`). `/api/xlegal/run`
+      es el ÚNICO sitio que pasa `"xlegal"`; `/api/pro/run` no se tocó.
+- [x] PDF variante xlegal: fuera las filas "Tiempo estimado de reforzamiento" e "Inversión"
+      de la carátula, fuera la sección "COSTOS Y TIEMPO DE ENTREGA" y fuera el recuadro
+      "RECOMENDACIÓN DE USA LATINO PRIME". La última página queda con "Quedamos a su
+      disposición…", la firma y el AVISO IMPORTANTE (intocable en ambas variantes).
+- [x] Números romanos derivados de las secciones que realmente se renderizan. Antes estaban
+      escritos a mano: con una sección condicional vacía (miedo creíble, casos del país,
+      guía de detalles) el informe ya saltaba romanos. Ahora xlegal va I–X y pro I–XI.
+- [x] Prompt y `responseSchema` de Gemini: `opcionRecomendada`/`opcionJustificacion` solo
+      existen en pro. Si siguieran en `required` para xlegal, el modelo razonaría sobre
+      precios y ese razonamiento se filtra al texto libre de `recomendacionFinal`, que
+      ningún borrado de layout atrapa. En xlegal se añade la prohibición explícita de
+      precios, modalidades y de ofrecer abogado — conservando las DOS menciones legítimas:
+      el abogado del PROPIO cliente cuando consta en el expediente, y el aviso del pie.
+      Regla: prohibido OFRECER abogado; permitido REFERIRSE al del cliente y REMITIR a uno
+      externo.
+- [x] `/api/dev/informe-pdf?variant=xlegal` para revisar las dos variantes sin gastar cuota
+      de Gemini (ruta solo-dev, sigue devolviendo 404 en producción).
+- Verificado: en el PDF de xlegal, 0 coincidencias de
+      `US $|$400|$650|Opción 1|Opción 2|Inversión|COSTOS Y TIEMPO|RECOMENDADA|revisión de
+      abogado|abogado revisor`; el de /pro conserva sus secciones I–XI y su tabla. El texto
+      del PDF de /pro es idéntico al de antes salvo que el título IV ya no se parte en dos
+      renglones (el país era un nodo de texto aparte). `typecheck` y `build` en verde.
+- Nota: `npm run lint` está roto de antes — Next 16 retiró `next lint` y el repo no tiene
+      configuración de ESLint. No se tocó en este cambio.
+
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
 análisis profundo + genera el "Informe de Evaluación y Propuesta de Reforzamiento"

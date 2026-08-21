@@ -110,6 +110,13 @@ export interface GuiaDetalles {
   puntos: PuntoGuia[];
 }
 
+/**
+ * Variante del informe. "pro" = venta directa: el cliente pagó SOLO la evaluación, así
+ * que el PDF vende el reforzamiento. "xlegal" = evaluación embebida en x-legal, donde el
+ * reforzamiento ya está cubierto por el contrato que el cliente firmó.
+ */
+export type InformeVariant = "pro" | "xlegal";
+
 /** Contenido generado por la IA para el informe premium (además del Verdict). */
 export interface Informe extends Verdict {
   /** Ej. "Asilo, Withholding of Removal y protección bajo la CAT". */
@@ -134,9 +141,10 @@ export interface Informe extends Verdict {
   beneficios: string[];
   /** VIII. Recomendación final dirigida al cliente (1-2 párrafos). */
   recomendacionFinal: string;
-  /** Opción recomendada de la tabla de costos. */
-  opcionRecomendada: "plataforma" | "abogado";
-  opcionJustificacion: string;
+  /** Solo variante "pro": opción recomendada de la tabla de costos. */
+  opcionRecomendada?: "plataforma" | "abogado";
+  /** Solo variante "pro": 1 frase justificando esa opción. */
+  opcionJustificacion?: string;
 }
 
 export type ProJobStatus = "pending" | "processing";
