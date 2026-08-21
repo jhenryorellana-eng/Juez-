@@ -278,7 +278,11 @@ async function processXlegalJob(
     // Checkpoint logs: if the background task gets killed mid-flight, the last
     // line in the Vercel logs tells us exactly which stage died.
     console.log(`[xlegal:job] ${jobId} start (${job.files.length} docs)`);
-    const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente);
+    // Variante sin bloques comerciales: este cliente ya contrató el reforzamiento
+    // en x-legal, así que el informe no le vende precios ni revisión de abogado.
+    const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente, {
+      variant: "xlegal",
+    });
     console.log(`[xlegal:job] ${jobId} informe+pdf ready (score ${informe.score})`);
 
     // Local-dev storage returns a relative URL; the webhook consumer (x-legal

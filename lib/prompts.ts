@@ -1,3 +1,5 @@
+import type { InformeVariant } from "./types";
+
 /**
  * Prompt de sistema del agente evaluador de asilo (v2, adaptado).
  * Origen: prompt_agente_evaluador_asilo_v2.md del equipo, con dos adaptaciones
@@ -150,11 +152,16 @@ pantalla móvil):
  * "Informe de Evaluación y Propuesta de Reforzamiento" con el formato comercial de
  * USA Latino Prime (modelo: informe Vivanco Franco). Ejecutado por gemini-3.5-flash
  * con thinking MEDIUM (corre en segundo plano, la latencia no es problema).
+ *
+ * La variante "xlegal" quita del esquema los campos comerciales y prohíbe hablar de
+ * precios: ese cliente ya pagó el reforzamiento. Sin la prohibición, el razonamiento
+ * sobre modalidades se filtra a la narrativa libre de "recomendacionFinal".
  */
 export function buildInformeSystemPrompt(
   clienteNombre: string,
   clientePais: string,
   investigacion?: string,
+  variant: InformeVariant = "pro",
 ): string {
   return `${buildEvaluationSystemPrompt()}
 
@@ -187,10 +194,10 @@ Campos adicionales del JSON:
 - "beneficios": 6-8 beneficios concretos de reforzar este expediente.
 - "recomendacionFinal": 1-2 párrafos dirigidos al cliente por su nombre ("Sr./Sra. X:"),
   resumiendo por qué necesita el reforzamiento antes de la siguiente etapa.
-- "opcionRecomendada": "plataforma" (US $400) o "abogado" (US $650, recomendable cuando
+${variant === "pro" ? `- "opcionRecomendada": "plataforma" (US $400) o "abogado" (US $650, recomendable cuando
   hay puntos legales delicados: nexo débil, credibilidad crítica, barras o apelación).
 - "opcionJustificacion": 1 frase justificando esa opción.
-
+` : ""}
 - "miedoCreible": ANÁLISIS DEDICADO del miedo creíble (credible fear). Es una lectura
   profunda del relato, no un resumen del diagnóstico:
   · "analisis": 1-2 párrafos evaluando cómo se sostiene HOY el miedo creíble del cliente
@@ -237,7 +244,25 @@ Campos adicionales del JSON:
     cronológico — nunca respuestas prefabricadas ni hechos sugeridos.
   Recuerda en la guía: la verdad es innegociable; el detalle documenta lo que ya pasó,
   no lo embellece.
-</informe_premium>${investigacion ? `
+${variant === "xlegal" ? `
+REGLAS COMERCIALES DE ESTE INFORME (obligatorias):
+Este cliente YA contrató el reforzamiento: este informe es la primera fase de un
+servicio que ya pagó, no una oferta. Por eso, en NINGUNA sección del informe:
+- No menciones precios, cifras en dólares, modalidades, "opciones", planes ni plazos
+  de entrega comerciales.
+- No ofrezcas revisión, supervisión ni acompañamiento de abogado como servicio de USA
+  Latino Prime: no somos un despacho de abogados.
+
+Lo que SÍ debes seguir haciendo (no lo confundas con lo anterior):
+- Referirte al abogado o representante DEL PROPIO CLIENTE cuando conste en el
+  expediente (ej. "el caso cuenta con representación legal activa por parte de...") y
+  recomendarle que evalúe con él o ella lo que corresponda: es un hecho del expediente
+  y una remisión, no una oferta de servicio.
+- Remitir a un abogado de inmigración licenciado o a un representante acreditado por el
+  Departamento de Justicia, externos a USA Latino Prime.
+La regla exacta es: prohibido OFRECER abogado; permitido REFERIRSE al abogado del
+cliente y REMITIR a uno externo.
+` : ""}</informe_premium>${investigacion ? `
 
 <investigacion_pais>
 Resultado de la búsqueda en internet (fuentes oficiales del gobierno de EE. UU. y
