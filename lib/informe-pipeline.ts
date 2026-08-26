@@ -25,13 +25,17 @@ export async function buildInformeFromFiles(
   cliente: ClienteInfo,
   { variant = "pro" }: { variant?: InformeVariant } = {},
 ): Promise<{ informe: Informe; pdf: Buffer }> {
-  const docs: PreparedDoc[] = [];
-  for (const ref of files) {
-    const buffer = await storageRead(ref.url);
-    if (!buffer) throw new Error(`DOWNLOAD_FAILED:${ref.name}`);
-    if (buffer.length > MAX_FILE_BYTES) throw new Error(`TOO_LARGE:${ref.name}`);
-    docs.push(await prepareDoc(ref.name, buffer));
-  }
+  // Concurrent on purpose: downloading up to 10 documents one after another was
+  // pure dead time, and with a large case file it ate into the job budget before
+  // the model had even seen a page.
+  const docs: PreparedDoc[] = await Promise.all(
+    files.map(async (ref) => {
+      const buffer = await storageRead(ref.url);
+      if (!buffer) throw new Error(`DOWNLOAD_FAILED:${ref.name}`);
+      if (buffer.length > MAX_FILE_BYTES) throw new Error(`TOO_LARGE:${ref.name}`);
+      return prepareDoc(ref.name, buffer);
+    }),
+  );
 
   const informe = await generateInforme(docs, cliente, variant);
   const pdf = await renderInformePdf(
