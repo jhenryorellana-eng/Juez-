@@ -184,9 +184,9 @@ export const resultPath = (jobId: string) => `xlegal/results/${jobId}.json`;
 export const tokenMapPath = (tokenHash: string) => `xlegal/tokens/${tokenHash}.json`;
 
 /**
- * A job that never wrote a result is considered alive only within this window
- * (JOB_BUDGET_MS + the webhook backoff + margin). Older means the background
- * task was killed before it could close itself.
+ * A job that never wrote a result is considered alive only within this window:
+ * the route's whole maxDuration (300 s) plus a margin. Anything older was killed
+ * by the platform before it could close itself, so it will never write anything.
  */
 const RESUME_WINDOW_MS = 6 * 60_000;
 

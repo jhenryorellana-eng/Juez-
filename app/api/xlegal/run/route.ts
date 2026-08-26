@@ -28,15 +28,33 @@ export const maxDuration = 300;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** `maxDuration` above, in ms. The clock starts when the REQUEST arrives. */
+const MAX_DURATION_MS = 300_000;
+
 /**
- * Time the generation may take before we close the job ourselves.
- *
- * It sits well under `maxDuration` on purpose: the remaining seconds pay for the
- * failure path (writing the result plus up to ~40 s of webhook backoff). A job
- * killed by the platform mid-flight writes NOTHING — no result, no webhook — and
- * that silence is what wedges the client on a job that will never finish.
+ * Held back so the job can always close itself: writing the result plus up to
+ * ~40 s of webhook backoff. A job the platform kills mid-flight writes NOTHING —
+ * no result, no webhook — and that silence is what wedges the client on a job
+ * that will never finish. A budget that leaves no room to report its own expiry
+ * is no budget at all.
  */
-const JOB_BUDGET_MS = 240_000;
+const CLOSEOUT_RESERVE_MS = 60_000;
+
+/** Floor: below this a generation is hopeless anyway, so fail fast and clean. */
+const MIN_BUDGET_MS = 30_000;
+
+/**
+ * How long the generation may run before we close the job ourselves.
+ *
+ * Measured from when the request arrived, not from when the background work
+ * started: uploading documents can eat tens of seconds of `maxDuration` before
+ * `after()` ever runs, and a fixed budget would quietly spend the reserve that
+ * the close-out depends on.
+ */
+function jobBudgetMs(requestStartedAt: number): number {
+  const spent = Date.now() - requestStartedAt;
+  return Math.max(MIN_BUDGET_MS, MAX_DURATION_MS - spent - CLOSEOUT_RESERVE_MS);
+}
 
 /* -------------------------------------------------------------------------- */
 /*  GET /api/xlegal/run?id=<jobId>&t=<token> — client polling                  */
@@ -83,6 +101,9 @@ export async function GET(request: Request) {
 /*  "token" field plus "file" entries (small totals / local dev without Blob). */
 /* -------------------------------------------------------------------------- */
 export async function POST(request: Request) {
+  // Start of the maxDuration clock: everything below (uploads included) spends
+  // from the same budget the background job will later have to fit into.
+  const requestStartedAt = Date.now();
   const ipLimit = rateLimit(`xlegal-run:${getClientIp(request)}`, 5);
   if (!ipLimit.ok) {
     return NextResponse.json(
@@ -239,7 +260,7 @@ export async function POST(request: Request) {
     );
 
     const origin = resolveOrigin(request);
-    after(() => processXlegalJob(jobId, job, token, origin));
+    after(() => processXlegalJob(jobId, job, token, origin, requestStartedAt));
     return NextResponse.json({ jobId }, { status: 202 });
   } catch (error) {
     console.error(
@@ -285,14 +306,15 @@ async function processXlegalJob(
   job: XlegalJob,
   token: string,
   origin: string,
+  requestStartedAt: number,
 ): Promise<void> {
   const state: JobState = { closed: false };
+  const budgetMs = jobBudgetMs(requestStartedAt);
+  console.log(`[xlegal:job] ${jobId} budget ${Math.round(budgetMs / 1000)}s`);
+
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
   const budget = new Promise<never>((_, reject) => {
-    budgetTimer = setTimeout(
-      () => reject(new Error("TIMEOUT_BUDGET")),
-      JOB_BUDGET_MS,
-    );
+    budgetTimer = setTimeout(() => reject(new Error("TIMEOUT_BUDGET")), budgetMs);
   });
 
   // The loser of a Promise.race keeps running, and an unhandled rejection takes
