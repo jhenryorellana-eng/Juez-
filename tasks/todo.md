@@ -208,6 +208,39 @@ $400/$650 es el modelo de negocio y se queda tal cual.
 - Nota: `npm run lint` está roto de antes — Next 16 retiró `next lint` y el repo no tiene
       configuración de ESLint. No se tocó en este cambio.
 
+## v8 — Un expediente grande ya no deja el job muerto y al cliente en bucle ✅ (2026-08-25)
+- Síntoma: un caso con 100+ páginas nunca entregaba el PDF. El cliente veía error, y al
+      volver a entrar la generación se relanzaba sola y volvía a fallar, sin recuperar
+      nunca la pantalla de subida.
+- Causa: el pipeline se pasaba de los 300 s de `maxDuration` (descargas y subidas a la
+      Files API una a una, detección de país con el expediente completo, thinking MEDIUM
+      con 2 reintentos). Al matar la plataforma la función, el `catch` no llegaba a correr:
+      **no se escribía ni `done` ni `error`, y el webhook nunca salía**. Y `app/xlegal/page.tsx`
+      reenganchaba al job muerto para siempre, porque `prior?.status !== "error"` es `true`
+      cuando `prior` es `null` — el mismo bug que `FIX-JUEZ-XLEGAL.md` ya había señalado y
+      que se arregló solo en el `POST`, dejando el Server Component con la lógica vieja.
+- Fix: (1) `JOB_BUDGET_MS = 240_000` con `Promise.race` y un latch compartido, para que el
+      job **siempre** se cierre a tiempo escribiendo su resultado y entregando el webhook;
+      (2) `resolveResumableJob()` en `lib/xlegal.ts` como única fuente de verdad sobre la
+      reanudación, consumida por la página y por el endpoint — se acabó la lógica duplicada;
+      (3) coste recortado: thinking LOW, `retries: 1`, país detectado solo con el primer
+      documento, descargas y subidas concurrentes; (4) `errorCode()` propaga la causa real
+      (`TIMEOUT_BUDGET`, `DOWNLOAD_FAILED`, `TOO_LARGE`, `FILE_NOT_ACTIVE`…) en vez del
+      `GENERATION_FAILED` constante. `typecheck` en verde.
+- Del lado de x-legal (mismo trabajo, otro repo): el backstop `reconcile-juez-evaluations`
+      tenía handler pero **ninguna programación**, así que jamás corrió; se provisionó a
+      `*/15 * * * *` y se corrigió su `dedupeId` obligatorio, que lo habría dejado en no-op.
+
+### Pendiente (siguiente paso ya decidido)
+- **Trocear el expediente con checkpointing.** Lo de arriba aleja el techo de páginas; no lo
+      elimina. x-legal ya tiene el patrón montado en `ai-engine` para la extracción: chunks de
+      25 páginas con mupdf, umbral de entrada a 30 páginas / 15 MB, presupuesto blando de
+      600 s y progreso persistido para que un reintento no vuelva a pagar lo ya resuelto.
+      Portarlo aquí permitiría expedientes de cualquier tamaño.
+- **Comprobar Fluid Compute** en el panel de Vercel (deuda del commit `5d07207`): sin él,
+      `after()` puede morir antes de agotar `maxDuration` y el presupuesto de 240 s ni
+      llegaría a dispararse.
+
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
 análisis profundo + genera el "Informe de Evaluación y Propuesta de Reforzamiento"

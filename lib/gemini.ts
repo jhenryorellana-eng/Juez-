@@ -142,26 +142,39 @@ async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
 
 /** Convierte los documentos en partes del mensaje (inline, Files API o texto). */
 async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
-  const parts: Part[] = [];
+  // Paso 1 — decidir qué viaja inline. El presupuesto de 14 MB se reparte en
+  // orden de documento, así que esta decisión tiene que seguir siendo secuencial.
   let inlineBudget = INLINE_TOTAL_LIMIT;
+  const plan = docs.map((doc) => {
+    if (doc.kind === "text") return { doc, inline: false };
+    const inline =
+      doc.buffer.length <= INLINE_PDF_LIMIT && doc.buffer.length <= inlineBudget;
+    if (inline) inlineBudget -= doc.buffer.length;
+    return { doc, inline };
+  });
 
-  for (const [i, doc] of docs.entries()) {
-    const header = `--- DOCUMENTO ${i + 1} de ${docs.length}: ${doc.name} ---`;
-    if (doc.kind === "text") {
-      parts.push({ text: `${header}\n${doc.text}` });
-      continue;
-    }
-    parts.push({ text: header });
-    if (doc.buffer.length <= INLINE_PDF_LIMIT && doc.buffer.length <= inlineBudget) {
-      inlineBudget -= doc.buffer.length;
-      parts.push({
-        inlineData: { mimeType: "application/pdf", data: doc.buffer.toString("base64") },
-      });
-    } else {
-      parts.push(await uploadPdfToGemini(doc.name, doc.buffer));
-    }
-  }
-  return parts;
+  // Paso 2 — los PDF grandes se suben a la vez. De uno en uno cada archivo podía
+  // costar hasta 150 s de espera, y eso es lo que sacaba del presupuesto a un
+  // expediente voluminoso antes de que el modelo leyera nada.
+  const parts = await Promise.all(
+    plan.map(async ({ doc, inline }, i): Promise<Part[]> => {
+      const header = `--- DOCUMENTO ${i + 1} de ${docs.length}: ${doc.name} ---`;
+      if (doc.kind === "text") return [{ text: `${header}\n${doc.text}` }];
+      if (inline) {
+        return [
+          { text: header },
+          {
+            inlineData: {
+              mimeType: "application/pdf",
+              data: doc.buffer.toString("base64"),
+            },
+          },
+        ];
+      }
+      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer)];
+    }),
+  );
+  return parts.flat();
 }
 
 /**
@@ -407,7 +420,9 @@ function buildInformeSchema(variant: InformeVariant): Schema {
 
 /**
  * Genera el informe premium completo (diagnóstico + secciones del informe).
- * Corre en segundo plano: usa thinking MEDIUM para máxima profundidad.
+ * Corre en segundo plano, pero dentro de un presupuesto acotado: el thinking se
+ * mantiene en LOW porque MEDIUM costaba minutos por documento y un expediente
+ * voluminoso agotaba el presupuesto entero sin llegar a producir nada.
  */
 export async function generateInforme(
   docs: PreparedDoc[],
@@ -422,7 +437,9 @@ export async function generateInforme(
 
   // País del cliente, o detectado en el expediente; con él se investiga en internet
   // el panorama de casos ganados (si falla, el informe sale sin esa investigación).
-  const pais = cliente.pais.trim() || (await detectCountry(parts));
+  // Cuando hay que detectarlo basta el primer documento: adjuntar el expediente
+  // completo a esta pregunta auxiliar repetía todo el trabajo pesado sin mejorarla.
+  const pais = cliente.pais.trim() || (await detectCountry(parts.slice(0, 2)));
   const research = await researchCountryCases(pais);
 
   const baseConfig = {
@@ -438,11 +455,14 @@ export async function generateInforme(
   };
 
   try {
+    // Un solo reintento, no dos: cada uno de estos cuesta minutos enteros sobre
+    // un expediente grande, y quedarse sin presupuesto es peor que degradar al
+    // modelo de respaldo.
     const informe = await generateJson<Informe>({
       model: MODELS.judge,
       contents,
-      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM } },
-      retries: 2,
+      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      retries: 1,
     });
     return normalizeInforme(informe, research?.fuentes ?? [], variant);
   } catch (err) {
@@ -450,7 +470,7 @@ export async function generateInforme(
     const informe = await generateJson<Informe>({
       model: MODELS.judgeFallback,
       contents,
-      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+      config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
       retries: 1,
     });
     return normalizeInforme(informe, research?.fuentes ?? [], variant);

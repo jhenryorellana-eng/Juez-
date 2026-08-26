@@ -13,6 +13,10 @@ import {
   fetchXlegalSession,
   consumeXlegalAttempt,
   deliverXlegalWebhook,
+  resolveResumableJob,
+  jobPath,
+  resultPath,
+  tokenMapPath,
 } from "@/lib/xlegal";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
@@ -25,14 +29,14 @@ export const maxDuration = 300;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * A resumed job with no result yet is considered alive only within this window
- * (maxDuration 300 s + margin). Older means the background task was killed.
+ * Time the generation may take before we close the job ourselves.
+ *
+ * It sits well under `maxDuration` on purpose: the remaining seconds pay for the
+ * failure path (writing the result plus up to ~40 s of webhook backoff). A job
+ * killed by the platform mid-flight writes NOTHING — no result, no webhook — and
+ * that silence is what wedges the client on a job that will never finish.
  */
-const RESUME_WINDOW_MS = 6 * 60_000;
-
-const jobPath = (jobId: string) => `xlegal/jobs/${jobId}.json`;
-const resultPath = (jobId: string) => `xlegal/results/${jobId}.json`;
-const tokenMapPath = (tokenHash: string) => `xlegal/tokens/${tokenHash}.json`;
+const JOB_BUDGET_MS = 240_000;
 
 /* -------------------------------------------------------------------------- */
 /*  GET /api/xlegal/run?id=<jobId>&t=<token> — client polling                  */
@@ -178,28 +182,12 @@ export async function POST(request: Request) {
   }
 
   // Resume: a reload during/after generation reuses the same job, no new attempt.
-  // But only while the job is alive or delivered — a job that died without ever
-  // writing a result (killed after()) must NOT wedge the token forever: past the
-  // resume window we fall through and start a fresh job.
-  const mapping = await storageReadJson<{ jobId: string }>(tokenMapPath(tokenHash));
-  if (mapping?.jobId) {
-    const prior = await storageReadJson<XlegalResult>(resultPath(mapping.jobId));
-    if (prior?.status === "done") {
-      return NextResponse.json({ jobId: mapping.jobId }, { status: 202 });
-    }
-    if (!prior) {
-      const priorJob = await storageReadJson<XlegalJob>(jobPath(mapping.jobId));
-      const age = priorJob?.createdAt
-        ? Date.now() - new Date(priorJob.createdAt).getTime()
-        : Infinity;
-      if (age < RESUME_WINDOW_MS) {
-        return NextResponse.json({ jobId: mapping.jobId }, { status: 202 });
-      }
-      console.error(
-        `[xlegal:run] stale job ${mapping.jobId} (no result after ${Math.round(age / 1000)}s) — starting fresh`,
-      );
-    }
-    // prior.status === "error" also falls through to a fresh job.
+  // A job that died without ever writing a result stops being resumable once its
+  // window passes, so the token is never wedged. resolveResumableJob is the only
+  // place that decides this — the server page asks it the very same question.
+  const resume = await resolveResumableJob(tokenHash);
+  if (resume.kind !== "none") {
+    return NextResponse.json({ jobId: resume.jobId }, { status: 202 });
   }
 
   if (session.attemptsAllowed - session.attemptsUsed <= 0) {
@@ -268,13 +256,86 @@ export async function POST(request: Request) {
 /* -------------------------------------------------------------------------- */
 /*  Background job: generate → store → webhook → clean up                      */
 /* -------------------------------------------------------------------------- */
+/**
+ * Turns an internal throw into a code x-legal can store and show. Every failure
+ * used to be reported as the same "GENERATION_FAILED", so the real cause lived
+ * only in Vercel logs and nobody could tell a timeout from a corrupt upload.
+ */
+function errorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const known = [
+    "TIMEOUT_BUDGET",
+    "DOWNLOAD_FAILED",
+    "TOO_LARGE",
+    "FILE_NOT_ACTIVE",
+    "UNSUPPORTED",
+    "EMPTY",
+    "NO_API_KEY",
+  ];
+  return known.find((code) => message.startsWith(code)) ?? "GENERATION_FAILED";
+}
+
+/** Shared latch so only ONE of the two racers writes the job's outcome. */
+interface JobState {
+  closed: boolean;
+}
+
 async function processXlegalJob(
   jobId: string,
   job: XlegalJob,
   token: string,
   origin: string,
 ): Promise<void> {
+  const state: JobState = { closed: false };
+  let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<never>((_, reject) => {
+    budgetTimer = setTimeout(
+      () => reject(new Error("TIMEOUT_BUDGET")),
+      JOB_BUDGET_MS,
+    );
+  });
+
   try {
+    // Whichever finishes first wins: either the report is ready, or the budget
+    // runs out and we close the job ourselves while the function is still alive.
+    await Promise.race([generateAndDeliver(jobId, job, token, origin, state), budget]);
+  } catch (error) {
+    // The work already wrote a successful outcome and the budget merely lost the
+    // race afterwards — nothing to report.
+    if (state.closed) return;
+    state.closed = true;
+
+    const code = errorCode(error);
+    console.error(
+      `[xlegal:job] generation failed (${jobId}): ${code} —`,
+      (error as Error).message,
+    );
+    const result: XlegalResult = { status: "error", error: code };
+    await storagePut(resultPath(jobId), JSON.stringify(result), "application/json").catch(
+      () => {},
+    );
+    await deliverXlegalWebhook({
+      event: "evaluation.failed",
+      token,
+      jobId,
+      error: code,
+    });
+    // Privacy: client documents never outlive the job, even on failure.
+    await storageDelete(job.files.map((f) => f.url)).catch(() => {});
+  } finally {
+    clearTimeout(budgetTimer);
+  }
+}
+
+/** The happy path: generate → store → webhook → clean up. */
+async function generateAndDeliver(
+  jobId: string,
+  job: XlegalJob,
+  token: string,
+  origin: string,
+  state: JobState,
+): Promise<void> {
+  {
     // Checkpoint logs: if the background task gets killed mid-flight, the last
     // line in the Vercel logs tells us exactly which stage died.
     console.log(`[xlegal:job] ${jobId} start (${job.files.length} docs)`);
@@ -306,6 +367,10 @@ async function processXlegalJob(
       completedAt,
       webhookDelivered: false,
     };
+    // Claim the outcome before writing it: a budget timeout that fires from here
+    // on must not bury a report that is genuinely ready.
+    if (state.closed) return;
+    state.closed = true;
     await storagePut(resultPath(jobId), JSON.stringify(result), "application/json");
     console.log(`[xlegal:job] ${jobId} result saved, delivering webhook`);
 
@@ -336,20 +401,6 @@ async function processXlegalJob(
     }
     // If every webhook attempt failed the PDF stays put: /api/xlegal/status is
     // the reconciliation path and x-legal will pull the result from there.
-  } catch (error) {
-    console.error(`[xlegal:job] generation failed (${jobId}):`, (error as Error).message);
-    const result: XlegalResult = { status: "error", error: "GENERATION_FAILED" };
-    await storagePut(resultPath(jobId), JSON.stringify(result), "application/json").catch(
-      () => {},
-    );
-    await deliverXlegalWebhook({
-      event: "evaluation.failed",
-      token,
-      jobId,
-      error: "GENERATION_FAILED",
-    });
-    // Privacy: client documents never outlive the job, even on failure.
-    await storageDelete(job.files.map((f) => f.url)).catch(() => {});
   }
 }
 

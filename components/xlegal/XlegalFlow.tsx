@@ -104,8 +104,11 @@ export default function XlegalFlow({
             return;
           }
           if (data?.status === "error") {
+            // El intento se devuelve: x-legal lo reembolsa al recibir
+            // evaluation.failed, y ese webhook ahora sale siempre porque el job
+            // se cierra dentro de su presupuesto en vez de morir en silencio.
             throw new Error(
-              "No pudimos completar tu evaluación. Tu intento no se perdió: recarga esta página para volver a intentarlo.",
+              "No pudimos completar tu evaluación. Tu intento no se perdió: recarga esta página para volver a subir tus documentos.",
             );
           }
         }

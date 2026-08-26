@@ -11,7 +11,8 @@
  * `x-juez-signature`, secret `XLEGAL_WEBHOOK_SECRET`.
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { XlegalSession } from "./types";
+import { storageReadJson } from "./storage";
+import type { XlegalJob, XlegalResult, XlegalSession } from "./types";
 
 /** Opaque bearer token issued by x-legal (never logged, never stored in clear). */
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,128}$/;
@@ -172,4 +173,59 @@ export async function deliverXlegalWebhook(
     }
   }
   return false;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Job storage layout + resume decision (shared by the page and the API)      */
+/* -------------------------------------------------------------------------- */
+
+export const jobPath = (jobId: string) => `xlegal/jobs/${jobId}.json`;
+export const resultPath = (jobId: string) => `xlegal/results/${jobId}.json`;
+export const tokenMapPath = (tokenHash: string) => `xlegal/tokens/${tokenHash}.json`;
+
+/**
+ * A job that never wrote a result is considered alive only within this window
+ * (JOB_BUDGET_MS + the webhook backoff + margin). Older means the background
+ * task was killed before it could close itself.
+ */
+const RESUME_WINDOW_MS = 6 * 60_000;
+
+/**
+ * What to do with the job this token already started.
+ * - `none`    → no job, or the previous one is dead/failed: start fresh.
+ * - `done`    → finished: re-show the report.
+ * - `running` → still within its budget: keep polling.
+ */
+export type ResumeDecision =
+  | { kind: "none" }
+  | { kind: "done"; jobId: string }
+  | { kind: "running"; jobId: string };
+
+/**
+ * Single source of truth for "should this token resume its job?".
+ *
+ * It lives here because BOTH the server page (which decides whether to show the
+ * upload form or the progress screen) and POST /api/xlegal/run need the exact
+ * same answer. When this logic was duplicated, the page kept the client pinned
+ * to a dead job forever while the API had already learned to move on.
+ */
+export async function resolveResumableJob(tokenHash: string): Promise<ResumeDecision> {
+  const mapping = await storageReadJson<{ jobId: string }>(tokenMapPath(tokenHash));
+  if (!mapping?.jobId) return { kind: "none" };
+
+  const prior = await storageReadJson<XlegalResult>(resultPath(mapping.jobId));
+  if (prior?.status === "done") return { kind: "done", jobId: mapping.jobId };
+  // An explicit "error" result means the job closed itself: let the user retry.
+  if (prior) return { kind: "none" };
+
+  const job = await storageReadJson<XlegalJob>(jobPath(mapping.jobId));
+  const age = job?.createdAt
+    ? Date.now() - new Date(job.createdAt).getTime()
+    : Infinity;
+  if (age < RESUME_WINDOW_MS) return { kind: "running", jobId: mapping.jobId };
+
+  console.error(
+    `[xlegal] stale job ${mapping.jobId} (no result after ${Math.round(age / 1000)}s) — starting fresh`,
+  );
+  return { kind: "none" };
 }

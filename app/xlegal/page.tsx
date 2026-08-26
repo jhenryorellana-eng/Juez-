@@ -1,14 +1,13 @@
 import Background from "@/components/Background";
 import { Wordmark } from "@/components/Brand";
 import XlegalFlow from "@/components/xlegal/XlegalFlow";
-import { storageReadJson } from "@/lib/storage";
 import {
   xlegalConfigured,
   isValidToken,
   hashToken,
   fetchXlegalSession,
+  resolveResumableJob,
 } from "@/lib/xlegal";
-import type { XlegalResult } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,17 +44,11 @@ export default async function XlegalPage({
 
   // Resume: if this token already started a job, hand its id to the client so
   // a reload keeps polling (or re-shows the finished report) without a new attempt.
-  const tokenHash = hashToken(token);
-  const mapping = await storageReadJson<{ jobId: string }>(
-    `xlegal/tokens/${tokenHash}.json`,
-  );
-  let resumeJobId: string | undefined;
-  if (mapping?.jobId) {
-    const prior = await storageReadJson<XlegalResult>(
-      `xlegal/results/${mapping.jobId}.json`,
-    );
-    if (prior?.status !== "error") resumeJobId = mapping.jobId;
-  }
+  // Crucially, a job that died without ever writing a result is NOT resumable:
+  // resolveResumableJob answers "none" once its window has passed, so the client
+  // gets the upload form back instead of being pinned to a dead job forever.
+  const resume = await resolveResumableJob(hashToken(token));
+  const resumeJobId = resume.kind === "none" ? undefined : resume.jobId;
 
   const attemptsRemaining = Math.max(
     0,
