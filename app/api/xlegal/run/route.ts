@@ -295,10 +295,25 @@ async function processXlegalJob(
     );
   });
 
+  // The loser of a Promise.race keeps running, and an unhandled rejection takes
+  // the whole process down — which would kill the very close-out below that this
+  // budget exists to guarantee. So the work carries its own catch: it re-throws
+  // only while it still owns the outcome, and swallows a late failure once the
+  // budget has already closed the job.
+  const work = generateAndDeliver(jobId, job, token, origin, state).catch(
+    (error: unknown) => {
+      if (!state.closed) throw error;
+      console.error(
+        `[xlegal:job] ${jobId} failed after the budget already closed it:`,
+        (error as Error).message,
+      );
+    },
+  );
+
   try {
     // Whichever finishes first wins: either the report is ready, or the budget
     // runs out and we close the job ourselves while the function is still alive.
-    await Promise.race([generateAndDeliver(jobId, job, token, origin, state), budget]);
+    await Promise.race([work, budget]);
   } catch (error) {
     // The work already wrote a successful outcome and the budget merely lost the
     // race afterwards — nothing to report.
