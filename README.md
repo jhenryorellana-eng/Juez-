@@ -97,10 +97,10 @@ npm run dev                          # http://localhost:3000
 3. Crea el Blob store (Storage → Create → Blob) y vincúlalo al proyecto.
 4. Deploy. Cada `git push` a `main` redespliega.
 
-## Integración /xlegal (embebida en x-legal)
+## Integración /xlegal (embebida en ContyGo)
 
 `/xlegal?t=<token>` es la variante del informe **sin pago y sin formulario**: se embebe
-en un iframe del panel de [x-legal](https://x-legal.usalatinoprime.com), que es la fuente
+en un iframe del panel de [ContyGo](https://contygo.app), que es la fuente
 de verdad (emite el token, conoce al cliente, controla los intentos y guarda el PDF).
 Juez genera el informe, lo entrega por **webhook firmado** y borra sus copias.
 
@@ -137,7 +137,8 @@ npm run dev
 - Rate-limit en memoria por IP (evaluate 6/min, checkout 5/min, pro-run 10/min). Para
   límites compartidos entre instancias serverless, usar Upstash Redis / Vercel KV.
 - Solo se aceptan URLs de blob del dominio `*.blob.vercel-storage.com`.
-- El iframe solo se permite desde `x-legal.usalatinoprime.com`.
+- El iframe solo se permite desde `contygo.app` y, mientras dure su alias de
+  migración, desde `x-legal.usalatinoprime.com` (ver `next.config.mjs`).
 
 ## Estructura
 ```
