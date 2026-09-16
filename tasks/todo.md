@@ -241,6 +241,25 @@ $400/$650 es el modelo de negocio y se queda tal cual.
       `after()` puede morir antes de agotar `maxDuration` y el presupuesto de 240 s ni
       llegaría a dispararse.
 
+## v9 — ContyGo arranca la evaluación por API, sin iframe (2026-09-16)
+- Pedido del dueño: la evaluación de asilo deja de ser una página embebida. ContyGo llama
+      a Juez cuando el cliente confirma sus documentos, y el PDF le aparece al cliente al
+      momento, sin revisión del equipo.
+- Nuevo `POST /api/xlegal/jobs`:
+      - autenticado con `XLEGAL_API_KEY`, la misma clave de `/status`; no hace falta
+        ninguna variable nueva;
+      - idempotente por `jobId`;
+      - valida antes de arrancar: URLs firmadas de Supabase o de nuestro Blob, y
+        extensión aceptada (una imagen fallaría el job minutos después).
+- El trabajo en segundo plano pasó a `lib/xlegal-job.ts` y lo comparten `/run` y
+      `/jobs`: el mismo presupuesto con cierre garantizado, el mismo webhook y el mismo
+      `/status`.
+- La limpieza solo borra lo nuestro (`isOwnedStorageUrl`): antes intentaba `del()`
+      sobre cualquier URL.
+- `/run` sigue aceptando solo URLs de Blob: el endpoint sin clave no se amplió.
+- El iframe (`/xlegal`, `/run`, `frame-ancestors`) queda en su sitio hasta que
+      ContyGo despliegue el flujo nuevo; se retira en un cambio aparte.
+
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
 análisis profundo + genera el "Informe de Evaluación y Propuesta de Reforzamiento"

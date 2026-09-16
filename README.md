@@ -114,6 +114,22 @@ Contrato v1 (resumen):
   Protegido con `x-api-key`. **Decisión v1**: la misma `XLEGAL_API_KEY` sirve en ambas
   direcciones (un solo secreto compartido).
 
+**Servidor a servidor (v2, 2026-09-16)** — sin iframe. ContyGo arranca la evaluación
+directamente y ya no hacen falta la sesión ni el `consume` del lado de Juez:
+- `POST /api/xlegal/jobs` (en Juez), con `x-api-key: XLEGAL_API_KEY`. Body:
+  `{ jobId, token, cliente: { nombre, email, pais? }, files: [{ url, name }] }`.
+  - `jobId` lo acuña ContyGo, que ya consumió el intento. La petición es **idempotente**
+    por `jobId`: repetirla responde `202` sin volver a generar.
+  - `token` es el de la evaluación en ContyGo. Solo viaja de vuelta en el webhook, que
+    es el mismo de v1.
+  - `files`: de 1 a 10. Cada `url` debe ser HTTPS y, o bien de nuestro Blob, o bien una
+    **URL firmada** de Supabase (`*.supabase.co/storage/v1/object/sign/…`). El `name`
+    tiene que terminar en `.pdf`, `.docx` o `.txt`.
+  - Responde `202 { jobId, status }`. El resultado llega por el webhook firmado y, si
+    este falla, por `/api/xlegal/status`.
+  - Los documentos se leen de las URLs firmadas: no se copian a nuestro almacenamiento
+    ni se borran desde aquí (no son nuestros). El PDF temporal sí se borra tras el webhook.
+
 Variables: `XLEGAL_API_URL`, `XLEGAL_API_KEY`, `XLEGAL_WEBHOOK_SECRET` (server-only;
 sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
 

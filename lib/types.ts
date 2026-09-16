@@ -183,6 +183,8 @@ export interface XlegalJob {
   cliente: ClienteInfo;
   files: Array<{ url: string; name: string }>;
   createdAt: string;
+  /** "page" = the embedded /xlegal flow; "api" = POST /api/xlegal/jobs from x-legal. */
+  source?: "page" | "api";
 }
 
 export type XlegalResult =
