@@ -107,6 +107,20 @@ export async function storageReadJson<T>(pathname: string): Promise<T | null> {
   }
 }
 
+/**
+ * ¿Es una URL de NUESTRO almacenamiento (Vercel Blob o el disco local de dev)?
+ * Un job servidor-a-servidor lee los documentos de x-legal con URLs firmadas de
+ * Supabase: esos archivos no son nuestros y no se borran desde aquí.
+ */
+export function isOwnedStorageUrl(url: string): boolean {
+  if (isLocalUrl(url)) return true;
+  try {
+    return new URL(url).hostname.endsWith(".blob.vercel-storage.com");
+  } catch {
+    return false;
+  }
+}
+
 /** Borra archivos por URL (mezcla libre de URLs de Blob y locales). */
 export async function storageDelete(urls: string[]): Promise<void> {
   const locals = urls.filter(isLocalUrl);

@@ -45,6 +45,25 @@ export function apiKeyMatches(candidate: string): boolean {
   return expected.length > 0 && a.length === b.length && timingSafeEqual(a, b);
 }
 
+/**
+ * The document URLs POST /api/xlegal/jobs accepts: HTTPS, and either our own
+ * Vercel Blob or a SIGNED object URL of a Supabase project
+ * (`/storage/v1/object/sign/...`). The signed path matters: a public-bucket URL
+ * or any other Supabase endpoint is refused, so the key cannot be used to make
+ * this app fetch arbitrary resources.
+ */
+export function isAllowedJobDocumentUrl(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  if (url.hostname.endsWith(".blob.vercel-storage.com")) return true;
+  return url.hostname.endsWith(".supabase.co") && url.pathname.startsWith("/storage/v1/object/sign/");
+}
+
 function apiUrl(): string {
   return (process.env.XLEGAL_API_URL ?? "").replace(/\/+$/, "");
 }
