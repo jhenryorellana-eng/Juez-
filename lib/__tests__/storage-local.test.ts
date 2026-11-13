@@ -20,7 +20,10 @@ before(async () => {
 
 after(() => {
   process.chdir(originalCwd);
-  rmSync(dir, { recursive: true, force: true });
+  // On Windows something (search indexer, antivirus) can still hold a handle on
+  // a file just written: rmSync then fails with EPERM, and the whole file is
+  // reported as failed although every test passed. rmSync retries EPERM/EBUSY.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("storageDeleteAt (local store)", () => {
