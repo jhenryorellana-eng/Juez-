@@ -15,11 +15,13 @@
 import { buildInformeFromFiles } from "./informe-pipeline";
 import {
   closeFailedJob,
+  defaultCloseoutDeps,
   deliverReport,
   safeErrorMessage,
+  type CloseoutDeps,
   type JobState,
 } from "./xlegal-closeout";
-import type { XlegalJob } from "./types";
+import type { Informe, XlegalJob } from "./types";
 
 /** `maxDuration` of the routes that start a job, in ms. The clock starts when the REQUEST arrives. */
 export const MAX_DURATION_MS = 300_000;
@@ -68,15 +70,32 @@ function errorCode(error: unknown): string {
   return known.find((code) => message.startsWith(code)) ?? "GENERATION_FAILED";
 }
 
+/** What the job talks to — injectable so the race with the budget can be tested without Gemini or Blob. */
+export interface JobDeps {
+  /** Downloads the documents, generates the report and renders its PDF. */
+  generate(job: XlegalJob): Promise<{ informe: Informe; pdf: Buffer }>;
+  closeout: CloseoutDeps;
+  /** Overrides jobBudgetMs (tests). */
+  budgetMs?: number;
+}
+
+const defaultJobDeps: JobDeps = {
+  // Variante sin bloques comerciales: este cliente ya contrató el reforzamiento
+  // en x-legal, así que el informe no le vende precios ni revisión de abogado.
+  generate: (job) => buildInformeFromFiles(job.files, job.cliente, { variant: "xlegal" }),
+  closeout: defaultCloseoutDeps,
+};
+
 export async function processXlegalJob(
   jobId: string,
   job: XlegalJob,
   token: string,
   origin: string,
   requestStartedAt: number,
+  deps: JobDeps = defaultJobDeps,
 ): Promise<void> {
   const state: JobState = { closed: false };
-  const budgetMs = jobBudgetMs(requestStartedAt);
+  const budgetMs = deps.budgetMs ?? jobBudgetMs(requestStartedAt);
   console.log(`[xlegal:job] ${jobId} budget ${Math.round(budgetMs / 1000)}s`);
 
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -89,7 +108,7 @@ export async function processXlegalJob(
   // budget exists to guarantee. So the work carries its own catch: it re-throws
   // only while it still owns the outcome, and swallows a late failure once the
   // budget has already closed the job.
-  const work = generateAndDeliver(jobId, job, token, origin, state).catch(
+  const work = generateAndDeliver(jobId, job, token, origin, state, deps).catch(
     (error: unknown) => {
       if (!state.closed) throw error;
       console.error(
@@ -104,9 +123,16 @@ export async function processXlegalJob(
     // runs out and we close the job ourselves while the function is still alive.
     await Promise.race([work, budget]);
   } catch (error) {
-    // The work already wrote a successful outcome and the budget merely lost the
-    // race afterwards — nothing to report.
-    if (state.closed) return;
+    // The report was ready and claimed (deliverReport set state.closed) when the
+    // budget fired: the close-out is running — webhook, then forgetting the
+    // client. Returning now would end the after() callback, and the platform may
+    // freeze the instance before the documents, the PDF and the job record are
+    // deleted. Wait for it: this is what CLOSEOUT_RESERVE_MS is for, and `work`
+    // never rejects once state.closed is set (its catch absorbs it).
+    if (state.closed) {
+      await work;
+      return;
+    }
     state.closed = true;
 
     const code = errorCode(error);
@@ -115,7 +141,7 @@ export async function processXlegalJob(
       `[xlegal:job] generation failed (${jobId}): ${code} —`,
       safeErrorMessage(error),
     );
-    await closeFailedJob({ jobId, job, token, code });
+    await closeFailedJob({ jobId, job, token, code }, deps.closeout);
   } finally {
     clearTimeout(budgetTimer);
   }
@@ -128,17 +154,15 @@ async function generateAndDeliver(
   token: string,
   origin: string,
   state: JobState,
+  deps: JobDeps,
 ): Promise<void> {
   // Checkpoint logs: if the background task gets killed mid-flight, the last
   // line in the Vercel logs tells us exactly which stage died.
   console.log(`[xlegal:job] ${jobId} start (${job.files.length} docs, ${job.source ?? "page"})`);
-  // Variante sin bloques comerciales: este cliente ya contrató el reforzamiento
-  // en x-legal, así que el informe no le vende precios ni revisión de abogado.
-  const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente, {
-    variant: "xlegal",
-  });
-  console.log(`[xlegal:job] ${jobId} informe+pdf ready (score ${informe.score})`);
-  await deliverReport({ jobId, job, token, origin, state, informe, pdf });
+  const { informe, pdf } = await deps.generate(job);
+  // No score: the evaluation of a person x-legal can identify does not stay in our logs either.
+  console.log(`[xlegal:job] ${jobId} informe+pdf ready`);
+  await deliverReport({ jobId, job, token, origin, state, informe, pdf }, deps.closeout);
 }
 
 export function resolveOrigin(request: Request): string {

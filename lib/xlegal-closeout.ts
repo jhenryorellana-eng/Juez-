@@ -6,10 +6,12 @@
  * so the rules about what is kept and what is deleted can be tested without
  * Gemini, Blob or x-legal: every I/O goes through `CloseoutDeps`.
  */
+import { safeErrorMessage } from "./safe-error";
+import { isXlegalClientFilePathname } from "./storage-paths";
 import {
-  isOwnedStorageUrl,
   storageDelete,
   storageDeleteAt,
+  storagePathname,
   storagePut,
   storageReadJson,
 } from "./storage";
@@ -38,6 +40,8 @@ export interface CloseoutDeps {
   deliver(payload: XlegalWebhookPayload): Promise<boolean>;
 }
 
+export { safeErrorMessage };
+
 export const defaultCloseoutDeps: CloseoutDeps = {
   put: storagePut,
   readJson: storageReadJson,
@@ -54,24 +58,19 @@ export interface JobState {
 export const informePdfPath = (jobId: string) => `xlegal/informes/informe-${jobId}.pdf`;
 
 /**
- * The files this app may delete once the job is over: only its OWN copies. A
- * server-to-server job reads the documents straight from x-legal's storage
+ * The files this app may delete once the job is over: only its OWN copies of the
+ * client's documents (`xlegal/docs/`) and of the report (`xlegal/informes/`).
+ * A server-to-server job reads the documents straight from x-legal's storage
  * through short-lived signed URLs; those are not ours to delete (and Vercel
- * Blob's `del()` would only fail on them).
+ * Blob's `del()` would only fail on them). And a URL of our store outside those
+ * folders — the purge marker, a result, `casos/` — is never a job's file, even
+ * if a request named it as one.
  */
 function ownedUrls(urls: string[]): string[] {
-  return urls.filter(isOwnedStorageUrl);
-}
-
-/**
- * Text that is safe to log. Internal errors are `CODE:detail`, and the detail is
- * often a document name — which usually carries the client's name — so only the
- * code survives. Anything else is kept, truncated.
- */
-export function safeErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const coded = /^([A-Z][A-Z0-9_]*):/.exec(message);
-  return coded ? coded[1] : message.slice(0, 200);
+  return urls.filter((url) => {
+    const pathname = storagePathname(url);
+    return pathname !== null && isXlegalClientFilePathname(pathname);
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -123,8 +122,21 @@ export async function deliverReport(
     completedAt,
     webhookDelivered: false,
   };
-  await deps.put(resultPath(jobId), JSON.stringify(result), "application/json");
-  console.log(`[xlegal:job] ${jobId} result saved, delivering webhook`);
+  // A result that cannot be written must not stop the webhook: it carries the
+  // pdfUrl and x-legal downloads the PDF before it answers 2xx, so the client
+  // still gets the report. Without this, the job ended with no webhook at all,
+  // and the client's data stayed here until the 30-day sweep.
+  let resultStored = true;
+  try {
+    await deps.put(resultPath(jobId), JSON.stringify(result), "application/json");
+    console.log(`[xlegal:job] ${jobId} result saved, delivering webhook`);
+  } catch (error) {
+    resultStored = false;
+    console.error(
+      `[xlegal:job] ${jobId} could not save the result, delivering the webhook anyway:`,
+      safeErrorMessage(error),
+    );
+  }
 
   const delivered = await deps.deliver({
     event: "evaluation.completed",
@@ -142,17 +154,24 @@ export async function deliverReport(
   console.log(
     `[xlegal:job] ${jobId} webhook ${delivered ? "delivered" : "FAILED (reconciliation pending)"}`,
   );
+  const ourCopies = ownedUrls([...job.files.map((f) => f.url), storedPdfUrl]);
   if (delivered) {
     // x-legal stored the PDF: remove our copies (the client docs we hold, if
     // any, and the temporary PDF).
-    await deps
-      .deleteUrls(ownedUrls([...job.files.map((f) => f.url), storedPdfUrl]))
-      .catch(() => {});
+    await deps.deleteUrls(ourCopies).catch(() => {});
     await forgetDeliveredJob(jobId, job.tokenHash, completedAt, deps);
+  } else if (!resultStored) {
+    // Neither delivered nor stored: /api/xlegal/status has no result to serve,
+    // so nothing can reconcile this report — x-legal will give the attempt back
+    // (STALE_NO_RESULT). Keep no copy of the documents or the evaluation. The
+    // job record stays: it is then the only trace of the job.
+    await deps.deleteUrls(ourCopies).catch(() => {});
+    console.error(`[xlegal:job] ${jobId} result not saved and webhook failed: PDF and documents deleted`);
   }
-  // If every webhook attempt failed the PDF and the full result stay put:
-  // /api/xlegal/status is the reconciliation path and x-legal will pull the
-  // result from there. The 30-day sweep (lib/xlegal-purge.ts) is their limit.
+  // If every webhook attempt failed but the result is stored, the PDF and the
+  // full result stay put: /api/xlegal/status is the reconciliation path and
+  // x-legal will pull the result from there. The 30-day sweep
+  // (lib/xlegal-purge.ts) is their limit.
 }
 
 /**

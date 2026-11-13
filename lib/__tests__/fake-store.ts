@@ -1,7 +1,7 @@
 /**
  * In-memory stand-in for lib/storage.ts + the x-legal webhook, for the tests of
  * the job close-out and the retention sweep. URLs look like Vercel Blob's so
- * that isOwnedStorageUrl() treats them as ours.
+ * that storagePathname() treats them as ours.
  */
 import type { CloseoutDeps } from "../xlegal-closeout";
 import type { PurgeDeps } from "../xlegal-purge";

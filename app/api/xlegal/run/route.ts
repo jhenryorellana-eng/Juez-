@@ -1,5 +1,6 @@
 import { NextResponse, after } from "next/server";
 import { storagePut, storageReadJson, storageAvailable } from "@/lib/storage";
+import { isXlegalUploadedDocUrl } from "@/lib/storage-paths";
 import type { FileRef } from "@/lib/informe-pipeline";
 import {
   xlegalConfigured,
@@ -145,14 +146,11 @@ export async function POST(request: Request) {
       files = (body.files ?? []).filter(
         (f) => typeof f?.url === "string" && typeof f?.name === "string",
       );
+      // Only what the page uploaded to xlegal/docs/: the job reads these, sends
+      // them to Gemini and, when it closes, deletes them. Any other blob of the
+      // store (a result, the purge marker, casos/) is not the caller's to name.
       for (const f of files) {
-        let host: string;
-        try {
-          host = new URL(f.url).hostname;
-        } catch {
-          return NextResponse.json({ error: "URL de archivo inválida." }, { status: 400 });
-        }
-        if (!host.endsWith(".blob.vercel-storage.com")) {
+        if (!isXlegalUploadedDocUrl(f.url)) {
           return NextResponse.json({ error: "URL de archivo no permitida." }, { status: 400 });
         }
       }

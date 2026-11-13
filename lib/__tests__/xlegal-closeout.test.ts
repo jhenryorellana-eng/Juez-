@@ -178,6 +178,49 @@ describe("deliverReport", () => {
     const logs = await captureLogs(() => report());
     assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
   });
+
+  it("the result could not be stored: still delivers the webhook and, on 2xx, forgets the client", async () => {
+    store.failPut = (pathname, attempt) => pathname === resultPath(JOB_ID) && attempt === 1;
+    await captureLogs(() => report());
+
+    assert.equal(store.webhooks.length, 1);
+    assert.equal(store.webhooks[0].event, "evaluation.completed");
+    assert.ok(store.webhooks[0].result?.pdfUrl);
+    assert.deepEqual(store.json(resultPath(JOB_ID)), {
+      status: "done",
+      completedAt: store.webhooks[0].completedAt,
+      webhookDelivered: true,
+    });
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    assert.equal(store.has(informePdfPath(JOB_ID)), false);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+  });
+
+  it("the result could not be stored and the webhook failed: deletes our PDF and documents", async () => {
+    // Nothing can reconcile this report (/status has no result to serve), so no
+    // copy of the client's documents or evaluation is kept for 30 days.
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    store.webhookOk = () => false;
+    await captureLogs(() => report());
+
+    assert.equal(store.webhooks.length, 1);
+    assert.equal(store.has(resultPath(JOB_ID)), false);
+    assert.equal(store.has(informePdfPath(JOB_ID)), false);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+    // The record stays: it is then the only trace of the job.
+    assert.equal(store.has(jobPath(JOB_ID)), true);
+  });
+
+  it("only deletes our blobs under xlegal/docs/ or xlegal/informes/, never another path of the store", async () => {
+    const marker = store.seed("xlegal/.purge-marker.json", { lastRunAt: "x" });
+    const demo = store.seed("casos/demo.pdf", "pdf");
+    job.files.push({ url: marker, name: "a" }, { url: demo, name: "b" });
+    await report();
+
+    assert.equal(store.has("xlegal/.purge-marker.json"), true);
+    assert.equal(store.has("casos/demo.pdf"), true);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+  });
 });
 
 describe("closeFailedJob", () => {

@@ -1,3 +1,5 @@
+import { safeErrorMessage } from "./safe-error";
+
 /**
  * The files one evaluation uploaded to the Gemini Files API. They are the
  * client's documents, and Google keeps them for 48 h unless they are deleted,
@@ -58,7 +60,7 @@ export class GeminiUploads {
     try {
       await this.deleteFile(name);
     } catch (err) {
-      console.error("[gemini:files] could not delete an uploaded file:", (err as Error).message);
+      console.error("[gemini:files] could not delete an uploaded file:", safeErrorMessage(err));
     }
   }
 }

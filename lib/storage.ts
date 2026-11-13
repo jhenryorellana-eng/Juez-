@@ -7,8 +7,23 @@
  */
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
-import { put, del, list } from "@vercel/blob";
-import { exactBlob } from "./storage-paths";
+import {
+  put,
+  del,
+  list,
+  BlobAccessError,
+  BlobClientTokenExpiredError,
+  BlobError,
+  BlobNotFoundError,
+  BlobPreconditionFailedError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobServiceRateLimited,
+  BlobStoreNotFoundError,
+  BlobStoreSuspendedError,
+  BlobUnknownError,
+} from "@vercel/blob";
+import { blobUrlPathname, exactBlob } from "./storage-paths";
 
 const DEV_ROUTE = "/api/dev/file?path=";
 const BASE_DIR = path.join(process.cwd(), ".dev-store");
@@ -124,17 +139,20 @@ export async function storageReadJson<T>(pathname: string): Promise<T | null> {
 }
 
 /**
- * ¿Es una URL de NUESTRO almacenamiento (Vercel Blob o el disco local de dev)?
- * Un job servidor-a-servidor lee los documentos de x-legal con URLs firmadas de
- * Supabase: esos archivos no son nuestros y no se borran desde aquí.
+ * El pathname interno de una URL de NUESTRO almacenamiento (Vercel Blob o el
+ * disco local de dev), o null si no es nuestra. Un job servidor-a-servidor lee
+ * los documentos de x-legal con URLs firmadas de Supabase: esos archivos no son
+ * nuestros y no se borran desde aquí.
  */
-export function isOwnedStorageUrl(url: string): boolean {
-  if (isLocalUrl(url)) return true;
-  try {
-    return new URL(url).hostname.endsWith(".blob.vercel-storage.com");
-  } catch {
-    return false;
+export function storagePathname(url: string): string | null {
+  if (isLocalUrl(url)) {
+    try {
+      return pathFromLocalUrl(url);
+    } catch {
+      return null;
+    }
   }
+  return blobUrlPathname(url);
 }
 
 /** Borra archivos por URL (mezcla libre de URLs de Blob y locales). */
@@ -237,6 +255,35 @@ async function listLocal(prefix: string): Promise<StoredObject[]> {
 /** URLs per del() request, so one huge sweep is not one huge request. */
 const DELETE_BATCH = 100;
 
+/** Blob errors whose message is a fixed sentence of the SDK: safe to log as is. */
+const FIXED_MESSAGE_BLOB_ERRORS = [
+  BlobAccessError,
+  BlobClientTokenExpiredError,
+  BlobNotFoundError,
+  BlobPreconditionFailedError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobServiceRateLimited,
+  BlobStoreNotFoundError,
+  BlobStoreSuspendedError,
+  BlobUnknownError,
+];
+
+/**
+ * What may be logged of a failed Blob call that handled client files. The SDK
+ * builds some errors from the server's own message (`new BlobError(message)`),
+ * and nothing guarantees that message never quotes a URL or a pathname — which,
+ * under xlegal/docs/, carries the client's file name. So only the SDK's fixed
+ * sentences survive; of anything else, just its kind.
+ */
+export function safeBlobErrorMessage(error: unknown): string {
+  if (FIXED_MESSAGE_BLOB_ERRORS.some((kind) => error instanceof kind)) {
+    return (error as Error).message;
+  }
+  if (error instanceof BlobError) return "BlobError (message omitted)";
+  return error instanceof Error ? error.name : typeof error;
+}
+
 /**
  * Deletes objects by `ref` (as storageList returns them). Unlike storageDelete,
  * it reports what it could NOT delete instead of swallowing it: a retention
@@ -244,6 +291,8 @@ const DELETE_BATCH = 100;
  */
 export async function storageDeleteMany(
   refs: string[],
+  /** Vercel Blob's del(); injectable for tests. */
+  remove: (urls: string[]) => Promise<void> = del,
 ): Promise<{ deleted: number; failed: number }> {
   let deleted = 0;
   let failed = 0;
@@ -263,13 +312,13 @@ export async function storageDeleteMany(
   for (let i = 0; i < remotes.length; i += DELETE_BATCH) {
     const batch = remotes.slice(i, i + DELETE_BATCH);
     try {
-      await del(batch);
+      await remove(batch);
       deleted += batch.length;
     } catch (error) {
       failed += batch.length;
       console.error(
         `[storage] could not delete a batch of ${batch.length}:`,
-        (error as Error).message,
+        safeBlobErrorMessage(error),
       );
     }
   }
