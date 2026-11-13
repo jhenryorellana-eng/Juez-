@@ -196,15 +196,15 @@ export interface XlegalReportResult {
   completedAt: string;
   /**
    * false until x-legal acknowledged the webhook with a 2xx. Results written
-   * before 2026-11-12 can say true and still carry the report; they age out
-   * with the 30-day sweep (lib/retention.ts).
+   * before 2026-11-12 can say true and still carry the report; the daily cron
+   * reduces them to an XlegalDeliveredResult (lib/xlegal-purge.ts).
    */
   webhookDelivered: boolean;
 }
 
 /**
  * What is left once x-legal acknowledged the webhook: it holds the report, so
- * nothing about the client or the evaluation stays here (lib/xlegal-job.ts).
+ * nothing about the client or the evaluation stays here (lib/xlegal-closeout.ts).
  */
 export interface XlegalDeliveredResult {
   status: "done";

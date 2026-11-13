@@ -274,6 +274,23 @@ $400/$650 es el modelo de negocio y se queda tal cual.
       (sin él, `503`), y red en `POST /api/xlegal/jobs` vía `after()` una vez cada 24 h.
 - Files API de Gemini: los PDF subidos se borran en un `finally` (`GeminiUploads`).
 - Fuera de alcance: `pro/`.
+- Tras la revisión (security + code), mismo PR:
+  - [x] Tests: `npm test` (node:test + tsx) — retención, cierre del job, barrido, Files
+        API y rutas del almacén (`lib/__tests__/`).
+  - [x] El cierre del job sale a `lib/xlegal-closeout.ts` con I/O inyectable.
+  - [x] Redacción: un reintento; si vuelve a fallar se borra el resultado completo.
+  - [x] Job fallido entregado: se borran job y mapeo; queda `{ status, error }`.
+  - [x] PDF tardío tras cerrar el presupuesto: no se guarda o se borra.
+  - [x] Lecturas/borrados por pathname exacto; `/api/upload` con lista blanca
+        (`casos/`, `xlegal/docs/`).
+  - [x] Red de `after()`: tope de 500 borrados, sin leer resultados; marcador solo tras
+        un barrido completo; nunca en previews (`VERCEL_ENV=preview`).
+  - [x] Cron: reduce los resultados entregados antes del 2026-11-12.
+  - [x] `GET /run` sin job: 404 si el `jobId` no tiene un resultado entregado o fallido.
+  - [x] `FILE_NOT_ACTIVE` sin el nombre del archivo; logs con solo el código.
+  - [ ] `CRON_SECRET` en Vercel (Production) — paso manual, antes del merge.
+  - [ ] Aparte: `npm audit` (next ≥ 16.4.1, undici, sharp…), Blob privado para
+        `xlegal/`, Blob y `XLEGAL_*` propios para Preview.
 
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =

@@ -8,6 +8,7 @@
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { put, del, list } from "@vercel/blob";
+import { exactBlob } from "./storage-paths";
 
 const DEV_ROUTE = "/api/dev/file?path=";
 const BASE_DIR = path.join(process.cwd(), ".dev-store");
@@ -90,13 +91,28 @@ export async function storageRead(url: string): Promise<Buffer | null> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+/**
+ * list() matches by prefix, so the exact pathname is looked for among the first
+ * page of matches (lib/storage-paths.ts → exactBlob). Since /api/upload only
+ * hands out tokens for `casos/` and `xlegal/docs/`, nobody but this server can
+ * write under the prefixes read this way; the page size is the margin left for
+ * whatever got there before that rule existed.
+ */
+const EXACT_LOOKUP_PAGE = 100;
+
+/** The blob stored under exactly `pathname`, or undefined. */
+async function findExactBlob(pathname: string) {
+  const { blobs } = await list({ prefix: assertSafe(pathname), limit: EXACT_LOOKUP_PAGE });
+  return exactBlob(blobs, pathname);
+}
+
 /** Lee y parsea un JSON guardado bajo un pathname interno. */
 export async function storageReadJson<T>(pathname: string): Promise<T | null> {
   try {
     if (blobEnabled()) {
-      const { blobs } = await list({ prefix: assertSafe(pathname), limit: 1 });
-      if (blobs.length === 0) return null;
-      const res = await fetch(blobs[0].url, { cache: "no-store" });
+      const blob = await findExactBlob(pathname);
+      if (!blob) return null;
+      const res = await fetch(blob.url, { cache: "no-store" });
       if (!res.ok) return null;
       return (await res.json()) as T;
     }
@@ -136,8 +152,8 @@ export async function storageDelete(urls: string[]): Promise<void> {
 /** Borra un archivo por su pathname interno. */
 export async function storageDeleteAt(pathname: string): Promise<void> {
   if (blobEnabled()) {
-    const { blobs } = await list({ prefix: assertSafe(pathname), limit: 1 });
-    if (blobs.length > 0) await del(blobs[0].url).catch(() => {});
+    const blob = await findExactBlob(pathname);
+    if (blob) await del(blob.url).catch(() => {});
     return;
   }
   await fs.unlink(localFilePath(pathname)).catch(() => {});
@@ -150,6 +166,8 @@ export interface StoredObject {
   uploadedAt: Date;
   /** What storageDeleteMany takes: the blob URL, or the local URL in dev. */
   ref: string;
+  /** Bytes. */
+  size: number;
 }
 
 /** Blob's list() returns at most 1000 per page. */
@@ -171,6 +189,7 @@ export async function storageList(prefix: string): Promise<StoredObject[]> {
           pathname: blob.pathname,
           uploadedAt: new Date(blob.uploadedAt),
           ref: blob.url,
+          size: blob.size,
         });
       }
       cursor = page.hasMore ? page.cursor : undefined;
@@ -200,8 +219,8 @@ async function listLocal(prefix: string): Promise<StoredObject[]> {
       if (!entry.isFile()) continue;
       const pathname = path.relative(BASE_DIR, full).split(path.sep).join("/");
       if (!pathname.startsWith(prefix)) continue;
-      const { mtime } = await fs.stat(full);
-      objects.push({ pathname, uploadedAt: mtime, ref: localUrl(pathname) });
+      const { mtime, size } = await fs.stat(full);
+      objects.push({ pathname, uploadedAt: mtime, ref: localUrl(pathname), size });
     }
   }
 

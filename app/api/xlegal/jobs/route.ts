@@ -153,6 +153,9 @@ export async function POST(request: Request) {
  * in the store decides (lib/xlegal-purge.ts). It needs no secret beyond the
  * x-api-key this request already proved, never delays the 202 (after() runs
  * once the response is sent), and runs alongside the evaluation, not before it.
+ * Because it shares this invocation's 300 s with the evaluation, it deletes at
+ * most MAX_OPPORTUNISTIC_DELETES objects and reads no results; the cron is the
+ * real sweep, and it needs CRON_SECRET.
  */
 function scheduleRetentionSweep(): void {
   after(() => runPurgeIfDue("jobs"));

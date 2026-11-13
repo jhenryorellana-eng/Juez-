@@ -7,7 +7,7 @@
  *
  * The rule (owner's decision, 2026-11-12):
  *  - once x-legal acknowledges the webhook it holds the report, and nothing
- *    about the client stays here: lib/xlegal-job.ts redacts the result and
+ *    about the client stays here: lib/xlegal-closeout.ts redacts the result and
  *    deletes the job record and the token mapping;
  *  - whatever is left under `xlegal/` — redacted results, results whose webhook
  *    never landed (they still hold the report, because /api/xlegal/status is
@@ -91,4 +91,53 @@ export function folderOf(pathname: string): string {
     : pathname;
   const slash = rest.indexOf("/");
   return slash === -1 ? "(root)" : rest.slice(0, slash);
+}
+
+/**
+ * Most deletions the safety net may do in one go. It runs inside the same
+ * invocation as an evaluation (after() in POST /api/xlegal/jobs), so its work
+ * must stay small next to the evaluation's 300 s. 500 = five del() batches.
+ * The cron has its own invocation and no cap.
+ */
+export const MAX_OPPORTUNISTIC_DELETES = 500;
+
+/**
+ * Oldest first, at most `max`: a capped sweep spends its budget on what is the
+ * most overdue. Returns a new array.
+ */
+export function oldestFirst<T extends AgedObject>(
+  objects: readonly T[],
+  max: number = Infinity,
+): T[] {
+  return [...objects]
+    .sort((a, b) => a.uploadedAt.getTime() - b.uploadedAt.getTime())
+    .slice(0, Math.max(0, max));
+}
+
+const RESULT_PATH_RE =
+  /^xlegal\/results\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/;
+
+/** `xlegal/results/<uuid>.json` → `<uuid>`; anything else → null. */
+export function resultJobId(pathname: string): string | null {
+  return RESULT_PATH_RE.exec(pathname)?.[1] ?? null;
+}
+
+/**
+ * A redacted result (`{ status, completedAt, webhookDelivered }`) or an error
+ * result is well under this; a result that still carries the report is several
+ * KB. The cron only reads results above it, looking for delivered reports
+ * written before 2026-11-12 (lib/xlegal-purge.ts).
+ */
+export const REDACTED_RESULT_MAX_BYTES = 512;
+
+/**
+ * Whether this deployment may run the sweep. Vercel previews use the same Blob
+ * store (BLOB_READ_WRITE_TOKEN) as production, so a sweep from a preview — say,
+ * a branch with a retention rule still under review — would delete production
+ * data. Previews never sweep; locally (no VERCEL_ENV) the store is `.dev-store/`.
+ */
+export function sweepEnabledHere(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return env.VERCEL_ENV !== "preview";
 }

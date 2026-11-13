@@ -82,6 +82,7 @@ premium) · @vercel/blob · Stripe Checkout (vía REST, sin SDK).
 npm install
 cp .env.local.example .env.local     # completa las variables (ver abajo)
 npm run dev                          # http://localhost:3000
+npm test                             # node:test + tsx (lib/__tests__)
 ```
 
 ## Variables de entorno
@@ -90,7 +91,7 @@ npm run dev                          # http://localhost:3000
 | `GEMINI_API_KEY` | Sí | Evaluación con IA (sin ella, la app cae a modo demo local) |
 | `BLOB_READ_WRITE_TOKEN` | Para archivos > 3.5 MB y todo el premium | Vercel → Storage → Create → Blob |
 | `STRIPE_SECRET_KEY` | Para cobrar el informe de $50 | dashboard.stripe.com/apikeys |
-| `CRON_SECRET` | Para la purga diaria de `xlegal/` | Valor aleatorio largo en Vercel → Settings → Environment Variables (Production). Vercel lo envía solo al cron |
+| `CRON_SECRET` | **Sí, en Production** (purga diaria de `xlegal/`) | Valor aleatorio de ≥ 32 bytes, tipo *sensitive*, solo en Production: Vercel → Settings → Environment Variables. Vercel lo envía solo al cron. Sin ella el cron recibe `503` todos los días y la retención de 30 días queda en manos de la red de `POST /api/xlegal/jobs`, que solo corre cuando ContyGo pide una evaluación |
 
 ## Despliegue en Vercel
 1. En [vercel.com/new](https://vercel.com/new), importa el repositorio.
@@ -141,21 +142,45 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   —sin score, nivel, headline, nombre, correo, país ni documentos— y se borran
   `xlegal/jobs/<jobId>.json` y su `xlegal/tokens/<tokenHash>.json`. `/api/xlegal/status`
   responde entonces `done` sin `result`; `GET /api/xlegal/run` pide el enlace del PDF a x-legal.
+  Si la reescritura falla dos veces, el resultado completo se **borra** en vez de quedarse.
+  La lógica vive en `lib/xlegal-closeout.ts` (con tests en `lib/__tests__/`).
 - **Si el webhook no llega**, el resultado completo y el PDF se quedan: son la red de
   reconciliación de `/api/xlegal/status`.
+- **Un job fallido** cuyo `evaluation.failed` x-legal aceptó conserva solo
+  `{ status: "error", error }`: se borran el job y el mapeo del token. La página embebida
+  sigue viendo el error (`GET /api/xlegal/run` lo lee del resultado).
+- `GET /api/xlegal/run` sin job: un `jobId` que no tiene resultado (o cuyo resultado aún no
+  se entregó) responde `404` sin preguntar a x-legal.
+- Si el presupuesto cierra el job mientras se genera, el PDF tardío no se guarda (y si ya
+  se estaba subiendo, se borra).
 - **A los 30 días**, todo lo que haya bajo `xlegal/` (jobs, results, tokens, docs, informes)
   se borra, según la fecha de subida del blob (`uploadedAt`; en local, el `mtime`). Reglas
   en `lib/retention.ts`, barrido en `lib/xlegal-purge.ts`.
   - `GET /api/xlegal/purge`, llamado una vez al día por el cron de `vercel.json`, con
-    `Authorization: Bearer <CRON_SECRET>`. **Hace falta `CRON_SECRET` en Vercel**
-    (Production): sin ella la ruta responde `503`, no borra nada y lo deja en el log.
+    `Authorization: Bearer <CRON_SECRET>`. **`CRON_SECRET` es obligatoria en Vercel**
+    (Production): sin ella la ruta responde `503`, no borra nada y lo deja en el log. Es
+    el barrido de verdad: sin tope, y además reduce los resultados entregados **antes** del
+    2026-11-12 (que aún llevan el informe) igual que una entrega de hoy.
   - Red sin secreto nuevo: cada `POST /api/xlegal/jobs` autenticado lanza el barrido en
-    segundo plano (`after()`) como mucho una vez cada 24 h (marcador
-    `xlegal/.purge-marker.json`, que el barrido no borra).
+    segundo plano (`after()`) como mucho una vez cada 24 h. Comparte la invocación con la
+    evaluación, así que borra como mucho 500 objetos (los más viejos primero) y no lee
+    resultados.
+  - El marcador `xlegal/.purge-marker.json` (que el barrido no borra) se escribe solo tras
+    un barrido completo: si se cortó, llegó al tope o falló un borrado, la siguiente
+    petición lo reintenta.
+  - **Nunca desde un preview de Vercel** (`VERCEL_ENV=preview`): los previews comparten el
+    Blob de producción.
+  - Primera ejecución tras el deploy, sin esperar al cron de las 08:00 UTC, desde una
+    shell donde la variable no se imprima:
+    `curl -H "Authorization: Bearer $CRON_SECRET" https://<dominio-de-juez>/api/xlegal/purge`.
+    En los logs: `[xlegal:purge] cron: scanned N, expired M …` con `200`.
 - **Fuera de alcance**: `pro/` (flujo premium propio, el cliente pagó y puede volver a
   descargar) y el demo.
 - Los PDF grandes que se suben a la Files API de Gemini se borran al terminar cada
-  evaluación, en todos los flujos.
+  evaluación, en todos los flujos (`lib/gemini-uploads.ts`): la evaluación espera a las
+  subidas que siguen en vuelo y a sus borrados antes de terminar.
+- `/api/upload` solo emite tokens para `casos/` y `xlegal/docs/`; las lecturas y borrados
+  por pathname exigen el pathname exacto (`lib/storage-paths.ts`).
 
 Prueba local sin un x-legal real:
 ```bash
@@ -177,7 +202,10 @@ npm run dev
   anti-reuso de sesiones.
 - Rate-limit en memoria por IP (evaluate 6/min, checkout 5/min, pro-run 10/min). Para
   límites compartidos entre instancias serverless, usar Upstash Redis / Vercel KV.
-- Solo se aceptan URLs de blob del dominio `*.blob.vercel-storage.com`.
+- Solo se aceptan URLs de blob del dominio `*.blob.vercel-storage.com`, y el navegador
+  solo puede subir a `casos/` y `xlegal/docs/`.
+- Los logs de `/xlegal` llevan el código de error, no el mensaje: un `CODIGO:detalle`
+  suele llevar el nombre del documento.
 - El iframe solo se permite desde `contygo.app` y, mientras dure su alias de
   migración, desde `x-legal.usalatinoprime.com` (ver `next.config.mjs`).
 

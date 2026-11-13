@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
 import type { Schema, ContentListUnion, Part } from "@google/genai";
 import type { Verdict, Informe, ClienteInfo, InformeVariant } from "./types";
+import { GeminiUploads } from "./gemini-uploads";
 import {
   buildEvaluationSystemPrompt,
   buildEvaluationUserPrompt,
@@ -118,39 +119,11 @@ export type PreparedDoc =
   | { kind: "pdf"; name: string; buffer: Buffer }
   | { kind: "text"; name: string; text: string };
 
-/**
- * The files one evaluation uploaded to the Gemini Files API. They are the
- * client's documents, and Google keeps them for 48 h unless they are deleted,
- * so every evaluation deletes its own as soon as it is over (release()).
- */
-class GeminiUploads {
-  private names: string[] = [];
-  private released = false;
-
-  track(name: string | undefined): void {
-    if (!name) return;
-    // An upload that lands after the evaluation already gave up (a sibling
-    // upload failed and Promise.all rejected early) is deleted on arrival.
-    if (this.released) void deleteGeminiFile(name);
-    else this.names.push(name);
-  }
-
-  async release(): Promise<void> {
-    this.released = true;
-    const names = this.names.splice(0);
-    await Promise.all(names.map(deleteGeminiFile));
-  }
-}
-
-/** Never throws: cleanup must not break an evaluation (Google drops the file after 48 h anyway). */
+/** Deletes one file from the Files API (GeminiUploads logs a failure, never throws it). */
 async function deleteGeminiFile(name: string): Promise<void> {
   const client = getClient();
   if (!client) return;
-  try {
-    await client.files.delete({ name });
-  } catch (err) {
-    console.error("[gemini:files] could not delete an uploaded file:", (err as Error).message);
-  }
+  await client.files.delete({ name });
 }
 
 /** Sube un PDF grande a la Files API de Gemini y espera a que esté ACTIVO. */
@@ -163,13 +136,14 @@ async function uploadPdfToGemini(
   if (!client) throw new Error("NO_API_KEY");
 
   const blob = new Blob([new Uint8Array(buffer)], { type: "application/pdf" });
-  let file = await client.files.upload({
-    file: blob,
-    config: { mimeType: "application/pdf", displayName: name },
-  });
-  // Tracked before waiting for ACTIVE: a file that never activates still
-  // exists on Google's side and must be deleted too.
-  uploads.track(file.name);
+  // Tracked from the moment the upload returns, before waiting for ACTIVE: a
+  // file that never activates still exists on Google's side and must go too.
+  let file = await uploads.upload(() =>
+    client.files.upload({
+      file: blob,
+      config: { mimeType: "application/pdf", displayName: name },
+    }),
+  );
 
   const deadline = Date.now() + 150_000;
   while (file.state === FileState.PROCESSING && Date.now() < deadline) {
@@ -177,7 +151,9 @@ async function uploadPdfToGemini(
     file = await client.files.get({ name: file.name ?? "" });
   }
   if (file.state !== FileState.ACTIVE || !file.uri) {
-    throw new Error(`FILE_NOT_ACTIVE:${name}`);
+    // Code only: the document's name usually carries the client's, and the
+    // message ends up in the logs (lib/xlegal-job.ts).
+    throw new Error("FILE_NOT_ACTIVE");
   }
   return { fileData: { fileUri: file.uri, mimeType: "application/pdf" } };
 }
@@ -224,7 +200,7 @@ async function buildParts(docs: PreparedDoc[], uploads: GeminiUploads): Promise<
  * it ends — success, model error, or a failed upload.
  */
 async function withGeminiUploads<T>(run: (uploads: GeminiUploads) => Promise<T>): Promise<T> {
-  const uploads = new GeminiUploads();
+  const uploads = new GeminiUploads(deleteGeminiFile);
   try {
     return await run(uploads);
   } finally {

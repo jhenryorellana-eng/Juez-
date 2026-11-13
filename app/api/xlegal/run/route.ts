@@ -13,6 +13,7 @@ import {
   tokenMapPath,
 } from "@/lib/xlegal";
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
+import { pollAnswerWithoutJob } from "@/lib/xlegal-closeout";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 import type { XlegalJob, XlegalResult } from "@/lib/types";
@@ -44,7 +45,7 @@ export async function GET(request: Request) {
 
   // The poll is authenticated: the token hash must match the one on the job.
   const job = await storageReadJson<XlegalJob>(jobPath(id));
-  if (!job) return deliveredByXlegal(token);
+  if (!job) return answerWithoutJob(id, token);
   if (job.tokenHash !== hashToken(token)) {
     return NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
   }
@@ -54,7 +55,7 @@ export async function GET(request: Request) {
 
   // Once the webhook landed, our temporary PDF is deleted: swap in the fresh
   // signed download URL from x-legal so the client never gets a dead link.
-  // A delivered result no longer carries the report (lib/xlegal-job.ts), so
+  // A delivered result no longer carries the report (lib/xlegal-closeout.ts), so
   // the client shows the download without the score.
   if (result.status === "done" && result.webhookDelivered) {
     const { session } = await fetchXlegalSession(token);
@@ -66,17 +67,28 @@ export async function GET(request: Request) {
 }
 
 /**
- * The job record is gone. Since 2026-11-12 that is what a delivered job looks
- * like: once x-legal acknowledges the webhook, the record (name, email,
- * documents) is deleted — possibly while this client is still polling. x-legal
- * is the source of truth, so ask it: if this token's report is there, the job
- * is done. The jobId cannot be checked against the token any more, but nothing
- * leaks: the answer is only this token's own download link, which the page
- * already hands to whoever holds the token.
- *
- * Anything else stays a 404, which the client treats as "keep polling".
+ * The job record is gone. Since 2026-11-12 that is what a closed job looks
+ * like: once x-legal acknowledges the webhook (report or failure), the record
+ * (name, email, documents) is deleted — possibly while this client is still
+ * polling. The result decides (lib/xlegal-closeout.ts → pollAnswerWithoutJob):
+ *  - a failed job → its error code, the only thing kept of it;
+ *  - a delivered report → x-legal is the source of truth, so ask it: if this
+ *    token's report is there, the job is done. The jobId cannot be checked
+ *    against the token any more, but nothing leaks: the answer is only this
+ *    token's own download link, which the page already hands to whoever holds
+ *    the token;
+ *  - anything else (an unknown jobId included) → 404, which the client treats
+ *    as "keep polling". A made-up jobId never reaches x-legal.
  */
-async function deliveredByXlegal(token: string) {
+async function answerWithoutJob(id: string, token: string) {
+  const notFound = () => NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
+  const result = await storageReadJson<XlegalResult>(resultPath(id));
+  const answer = pollAnswerWithoutJob(result);
+  if (answer === "error" && result?.status === "error") {
+    return NextResponse.json({ status: "error", error: result.error });
+  }
+  if (answer !== "ask-xlegal") return notFound();
+
   const { session } = await fetchXlegalSession(token);
   if (session?.pdf.available && session.pdf.downloadUrl) {
     return NextResponse.json({
@@ -85,7 +97,7 @@ async function deliveredByXlegal(token: string) {
       pdfUrl: session.pdf.downloadUrl,
     });
   }
-  return NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
+  return notFound();
 }
 
 /* -------------------------------------------------------------------------- */

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { storageAvailable } from "@/lib/storage";
 import { purgeExpiredXlegalData } from "@/lib/xlegal-purge";
+import { sweepEnabledHere } from "@/lib/retention";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 
 export const runtime = "nodejs";
@@ -15,8 +16,13 @@ export const maxDuration = 300;
  * Called by the Vercel cron declared in vercel.json. When the project has a
  * CRON_SECRET variable, Vercel sends it as `Authorization: Bearer <CRON_SECRET>`.
  * Without that variable this route refuses to run (503): an unauthenticated
- * "delete things" endpoint is worse than a sweep that waits for its secret —
- * and the after() net in POST /api/xlegal/jobs keeps sweeping meanwhile.
+ * "delete things" endpoint is worse than a sweep that waits for its secret.
+ * CRON_SECRET is REQUIRED in production: this is the real sweep (no cap, plus
+ * the redaction of delivered results written before 2026-11-12). The after()
+ * net in POST /api/xlegal/jobs only runs when x-legal asks for an evaluation,
+ * and it is capped.
+ *
+ * Never from a Vercel preview: previews share production's Blob store.
  */
 export async function GET(request: Request) {
   const limit = rateLimit(`xlegal-purge:${getClientIp(request)}`, 10);
@@ -39,6 +45,9 @@ export async function GET(request: Request) {
   }
   if (!storageAvailable()) {
     return NextResponse.json({ error: "Not configured." }, { status: 501 });
+  }
+  if (!sweepEnabledHere()) {
+    return NextResponse.json({ error: "Sweeps only run in production." }, { status: 403 });
   }
 
   try {

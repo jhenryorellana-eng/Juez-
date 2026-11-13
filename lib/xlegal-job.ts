@@ -1,5 +1,7 @@
 /**
- * The x-legal evaluation job: generate → store → webhook → clean up.
+ * The x-legal evaluation job: generate → store → webhook → clean up. This file
+ * races the generation against its budget; how the job ends (what is stored,
+ * delivered and forgotten) lives in lib/xlegal-closeout.ts.
  *
  * Shared by the two ways a job can start:
  *  - POST /api/xlegal/run  — the embedded page (/xlegal), authenticated by the
@@ -10,21 +12,14 @@
  * Both write the same job/result files (lib/xlegal.ts), so /api/xlegal/status
  * and the webhook work the same whichever way the job started.
  */
-import {
-  storagePut,
-  storageDelete,
-  storageDeleteAt,
-  storageReadJson,
-  isOwnedStorageUrl,
-} from "./storage";
 import { buildInformeFromFiles } from "./informe-pipeline";
-import { deliverXlegalWebhook, jobPath, resultPath, tokenMapPath } from "./xlegal";
-import type {
-  XlegalDeliveredResult,
-  XlegalJob,
-  XlegalReportResult,
-  XlegalResult,
-} from "./types";
+import {
+  closeFailedJob,
+  deliverReport,
+  safeErrorMessage,
+  type JobState,
+} from "./xlegal-closeout";
+import type { XlegalJob } from "./types";
 
 /** `maxDuration` of the routes that start a job, in ms. The clock starts when the REQUEST arrives. */
 export const MAX_DURATION_MS = 300_000;
@@ -73,21 +68,6 @@ function errorCode(error: unknown): string {
   return known.find((code) => message.startsWith(code)) ?? "GENERATION_FAILED";
 }
 
-/**
- * The files this app may delete once the job is over: only its OWN copies. A
- * server-to-server job reads the documents straight from x-legal's storage
- * through short-lived signed URLs; those are not ours to delete (and Vercel
- * Blob's `del()` would only fail on them).
- */
-function ownedUrls(urls: string[]): string[] {
-  return urls.filter(isOwnedStorageUrl);
-}
-
-/** Shared latch so only ONE of the two racers writes the job's outcome. */
-interface JobState {
-  closed: boolean;
-}
-
 export async function processXlegalJob(
   jobId: string,
   job: XlegalJob,
@@ -114,7 +94,7 @@ export async function processXlegalJob(
       if (!state.closed) throw error;
       console.error(
         `[xlegal:job] ${jobId} failed after the budget already closed it:`,
-        (error as Error).message,
+        safeErrorMessage(error),
       );
     },
   );
@@ -130,28 +110,18 @@ export async function processXlegalJob(
     state.closed = true;
 
     const code = errorCode(error);
+    // safeErrorMessage: a `CODE:detail` message often carries a document name.
     console.error(
       `[xlegal:job] generation failed (${jobId}): ${code} —`,
-      (error as Error).message,
+      safeErrorMessage(error),
     );
-    const result: XlegalResult = { status: "error", error: code };
-    await storagePut(resultPath(jobId), JSON.stringify(result), "application/json").catch(
-      () => {},
-    );
-    await deliverXlegalWebhook({
-      event: "evaluation.failed",
-      token,
-      jobId,
-      error: code,
-    });
-    // Privacy: client documents never outlive the job, even on failure.
-    await storageDelete(ownedUrls(job.files.map((f) => f.url))).catch(() => {});
+    await closeFailedJob({ jobId, job, token, code });
   } finally {
     clearTimeout(budgetTimer);
   }
 }
 
-/** The happy path: generate → store → webhook → clean up. */
+/** The happy path: generate, then hand the report to the close-out. */
 async function generateAndDeliver(
   jobId: string,
   job: XlegalJob,
@@ -168,106 +138,7 @@ async function generateAndDeliver(
     variant: "xlegal",
   });
   console.log(`[xlegal:job] ${jobId} informe+pdf ready (score ${informe.score})`);
-
-  // Local-dev storage returns a relative URL; the webhook consumer (x-legal
-  // or the mock) needs an absolute one to download the PDF.
-  const storedPdfUrl = await storagePut(
-    `xlegal/informes/informe-${jobId}.pdf`,
-    pdf,
-    "application/pdf",
-  );
-  console.log(`[xlegal:job] ${jobId} pdf stored`);
-  const publicPdfUrl = storedPdfUrl.startsWith("/")
-    ? `${origin}${storedPdfUrl}`
-    : storedPdfUrl;
-
-  const completedAt = new Date().toISOString();
-  const result: XlegalReportResult = {
-    status: "done",
-    informe,
-    pdfUrl: publicPdfUrl,
-    cliente: job.cliente,
-    completedAt,
-    webhookDelivered: false,
-  };
-  // Claim the outcome before writing it: a budget timeout that fires from here
-  // on must not bury a report that is genuinely ready.
-  if (state.closed) return;
-  state.closed = true;
-  await storagePut(resultPath(jobId), JSON.stringify(result), "application/json");
-  console.log(`[xlegal:job] ${jobId} result saved, delivering webhook`);
-
-  const delivered = await deliverXlegalWebhook({
-    event: "evaluation.completed",
-    token,
-    jobId,
-    completedAt,
-    result: {
-      pdfUrl: publicPdfUrl,
-      score: informe.score,
-      nivel: informe.level,
-      headline: informe.headline,
-    },
-  });
-
-  console.log(`[xlegal:job] ${jobId} webhook ${delivered ? "delivered" : "FAILED (reconciliation pending)"}`);
-  if (delivered) {
-    // x-legal stored the PDF: remove our copies (the client docs we hold, if
-    // any, and the temporary PDF).
-    await storageDelete(ownedUrls([...job.files.map((f) => f.url), storedPdfUrl])).catch(
-      () => {},
-    );
-    await forgetDeliveredJob(jobId, job, completedAt);
-  }
-  // If every webhook attempt failed the PDF and the full result stay put:
-  // /api/xlegal/status is the reconciliation path and x-legal will pull the
-  // result from there. The 30-day sweep (lib/xlegal-purge.ts) is their limit.
-}
-
-/**
- * Once x-legal acknowledged the webhook it holds the report, so this app keeps
- * nothing about the client: the result is rewritten to its bare outcome (no
- * score, level, headline, name, email, country or document list), and the job
- * record — which held all of those — and the token mapping are deleted.
- *
- * Who still reads what is left, and why it is enough:
- *  - /api/xlegal/jobs answers a retried jobId with the result's `status`;
- *  - /api/xlegal/status answers `done` + `webhookDelivered` (x-legal's
- *    reconciler only acts on a `done` that carries `result`, and only polls
- *    evaluations whose webhook never landed);
- *  - GET /api/xlegal/run, with the job gone, asks x-legal for the download link.
- *
- * Each step stands on its own: one failing must not keep the others from
- * running, and the 30-day sweep is the net for whatever survives.
- */
-async function forgetDeliveredJob(
-  jobId: string,
-  job: XlegalJob,
-  completedAt: string,
-): Promise<void> {
-  const delivered: XlegalDeliveredResult = {
-    status: "done",
-    completedAt,
-    webhookDelivered: true,
-  };
-  await storagePut(resultPath(jobId), JSON.stringify(delivered), "application/json").catch(
-    (error: unknown) =>
-      console.error(`[xlegal:job] ${jobId} could not redact the result:`, (error as Error).message),
-  );
-
-  // Only the embedded page writes a mapping, and it points at the token's
-  // latest job: never delete one that already belongs to another job.
-  try {
-    const mapping = await storageReadJson<{ jobId?: string }>(tokenMapPath(job.tokenHash));
-    if (mapping?.jobId === jobId) await storageDeleteAt(tokenMapPath(job.tokenHash));
-  } catch (error) {
-    console.error(`[xlegal:job] ${jobId} could not delete the token mapping:`, (error as Error).message);
-  }
-
-  await storageDeleteAt(jobPath(jobId)).catch((error: unknown) =>
-    console.error(`[xlegal:job] ${jobId} could not delete the job record:`, (error as Error).message),
-  );
-  console.log(`[xlegal:job] ${jobId} delivered data forgotten`);
+  await deliverReport({ jobId, job, token, origin, state, informe, pdf });
 }
 
 export function resolveOrigin(request: Request): string {

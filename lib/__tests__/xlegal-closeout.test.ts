@@ -1,0 +1,221 @@
+import { beforeEach, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import {
+  closeFailedJob,
+  deliverReport,
+  forgetDeliveredJob,
+  informePdfPath,
+  pollAnswerWithoutJob,
+  safeErrorMessage,
+  type JobState,
+} from "../xlegal-closeout";
+import { jobPath, resultPath, tokenMapPath } from "../xlegal";
+import type { Informe, XlegalJob, XlegalResult } from "../types";
+import { FakeStore, captureLogs } from "./fake-store";
+
+const JOB_ID = "0b6f1c1e-6a39-4c51-9f0c-2b1f8f4a7d10";
+const OTHER_JOB_ID = "7c2d9e0a-1b3f-4a5c-8d6e-9f0a1b2c3d4e";
+const TOKEN = "tok_abcdefghijklmnopqrstuvwxyz";
+const TOKEN_HASH = "f".repeat(64);
+const CLIENT = { nombre: "Cliente Demo E2E", email: "demo@e2e.local", pais: "Honduras" };
+const FOREIGN_DOC = "https://abc.supabase.co/storage/v1/object/sign/docs/1.pdf?token=x";
+const INFORME = { score: 72, level: "medio", headline: "Caso con base" } as unknown as Informe;
+
+let store: FakeStore;
+let job: XlegalJob;
+let ownDoc: string;
+
+beforeEach(() => {
+  store = new FakeStore();
+  ownDoc = store.seed(`xlegal/docs/${JOB_ID}/0-doc.pdf`, "pdf-bytes");
+  job = {
+    status: "processing",
+    tokenHash: TOKEN_HASH,
+    cliente: CLIENT,
+    files: [
+      { url: ownDoc, name: "0-doc.pdf" },
+      { url: FOREIGN_DOC, name: "1.pdf" },
+    ],
+    createdAt: "2026-11-12T07:58:00.000Z",
+    source: "page",
+  };
+  store.seed(jobPath(JOB_ID), job);
+  store.seed(tokenMapPath(TOKEN_HASH), { jobId: JOB_ID });
+});
+
+function report(state: JobState = { closed: false }) {
+  return deliverReport(
+    {
+      jobId: JOB_ID,
+      job,
+      token: TOKEN,
+      origin: "https://juez.example",
+      state,
+      informe: INFORME,
+      pdf: Buffer.from("%PDF"),
+    },
+    store,
+  );
+}
+
+describe("forgetDeliveredJob", () => {
+  it("leaves only { status, completedAt, webhookDelivered } and deletes the job and its mapping", async () => {
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    await forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store);
+
+    assert.deepEqual(store.json(resultPath(JOB_ID)), {
+      status: "done",
+      completedAt: "2026-11-12T08:00:00.000Z",
+      webhookDelivered: true,
+    });
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    assert.equal(store.has(tokenMapPath(TOKEN_HASH)), false);
+  });
+
+  it("keeps a token mapping that already points at another job", async () => {
+    store.seed(tokenMapPath(TOKEN_HASH), { jobId: OTHER_JOB_ID });
+    await forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store);
+    assert.deepEqual(store.json(tokenMapPath(TOKEN_HASH)), { jobId: OTHER_JOB_ID });
+  });
+
+  it("retries the redaction once when the first write fails", async () => {
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    store.failPut = (pathname, attempt) => pathname === resultPath(JOB_ID) && attempt === 1;
+    await forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store);
+    assert.equal(store.json<{ webhookDelivered: boolean }>(resultPath(JOB_ID))?.webhookDelivered, true);
+    assert.equal(Object.keys(store.json(resultPath(JOB_ID)) ?? {}).length, 3);
+  });
+
+  it("deletes the full result when the redaction fails twice, and logs no client data", async () => {
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    const logs = await captureLogs(() =>
+      forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store),
+    );
+    assert.equal(store.has(resultPath(JOB_ID)), false);
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
+  });
+});
+
+describe("deliverReport", () => {
+  it("delivered: deletes our PDF and our copies of the documents, never x-legal's, and forgets the client", async () => {
+    await report();
+
+    assert.equal(store.has(informePdfPath(JOB_ID)), false);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+    assert.deepEqual(store.json(resultPath(JOB_ID)), {
+      status: "done",
+      completedAt: store.webhooks[0].completedAt,
+      webhookDelivered: true,
+    });
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    assert.equal(store.webhooks[0].event, "evaluation.completed");
+    assert.equal(store.webhooks[0].result?.score, 72);
+  });
+
+  it("webhook failed: keeps the full result, the PDF and the job for reconciliation", async () => {
+    store.webhookOk = () => false;
+    await report();
+
+    const result = store.json<{ webhookDelivered: boolean; informe?: unknown }>(resultPath(JOB_ID));
+    assert.equal(result?.webhookDelivered, false);
+    assert.ok(result?.informe);
+    assert.equal(store.has(informePdfPath(JOB_ID)), true);
+    assert.equal(store.has(jobPath(JOB_ID)), true);
+  });
+
+  it("does not store a PDF when the budget already closed the job", async () => {
+    await report({ closed: true });
+    assert.equal(store.putCalls.length, 0);
+    assert.equal(store.webhooks.length, 0);
+  });
+
+  it("deletes the PDF it just stored when the budget closes the job during the write", async () => {
+    const state: JobState = { closed: false };
+    store.onPut = (pathname) => {
+      if (pathname === informePdfPath(JOB_ID)) state.closed = true;
+    };
+    await report(state);
+
+    assert.equal(store.has(informePdfPath(JOB_ID)), false);
+    assert.equal(store.has(resultPath(JOB_ID)), false);
+    assert.equal(store.webhooks.length, 0);
+  });
+
+  it("logs no client data", async () => {
+    const logs = await captureLogs(() => report());
+    assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
+  });
+});
+
+describe("closeFailedJob", () => {
+  const fail = () =>
+    closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET" }, store);
+
+  it("delivered: keeps only { status, error } and deletes the job, its mapping and our documents", async () => {
+    await fail();
+
+    assert.deepEqual(store.json(resultPath(JOB_ID)), { status: "error", error: "TIMEOUT_BUDGET" });
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    assert.equal(store.has(tokenMapPath(TOKEN_HASH)), false);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+    assert.equal(store.webhooks[0].event, "evaluation.failed");
+    assert.equal(store.webhooks[0].error, "TIMEOUT_BUDGET");
+  });
+
+  it("webhook failed: keeps the job record", async () => {
+    store.webhookOk = () => false;
+    await fail();
+    assert.equal(store.has(jobPath(JOB_ID)), true);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+  });
+
+  it("keeps the job record when the error result could not be written", async () => {
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    await fail();
+    assert.equal(store.has(jobPath(JOB_ID)), true);
+  });
+});
+
+describe("pollAnswerWithoutJob", () => {
+  it("answers the error of a failed job", () => {
+    const result: XlegalResult = { status: "error", error: "TIMEOUT_BUDGET" };
+    assert.equal(pollAnswerWithoutJob(result), "error");
+  });
+
+  it("asks x-legal only for a delivered result", () => {
+    assert.equal(
+      pollAnswerWithoutJob({ status: "done", completedAt: "x", webhookDelivered: true }),
+      "ask-xlegal",
+    );
+  });
+
+  it("is not found for an unknown jobId or a result not delivered yet", () => {
+    assert.equal(pollAnswerWithoutJob(null), "not-found");
+    assert.equal(
+      pollAnswerWithoutJob({
+        status: "done",
+        informe: INFORME,
+        pdfUrl: "u",
+        cliente: CLIENT,
+        completedAt: "x",
+        webhookDelivered: false,
+      }),
+      "not-found",
+    );
+  });
+});
+
+describe("safeErrorMessage", () => {
+  it("keeps only the code of a CODE:detail message, whose detail may be a client's file name", () => {
+    assert.equal(safeErrorMessage(new Error("FILE_NOT_ACTIVE:Pasaporte Cliente.pdf")), "FILE_NOT_ACTIVE");
+    assert.equal(safeErrorMessage(new Error("UNSAFE_PATH:xlegal/docs/a b.pdf")), "UNSAFE_PATH");
+    assert.equal(safeErrorMessage(new Error("TIMEOUT_BUDGET")), "TIMEOUT_BUDGET");
+  });
+
+  it("keeps other messages, truncated", () => {
+    assert.equal(safeErrorMessage(new Error("fetch failed")), "fetch failed");
+    assert.equal(safeErrorMessage("x".repeat(500)).length, 200);
+  });
+});

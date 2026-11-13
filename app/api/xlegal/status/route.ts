@@ -46,7 +46,7 @@ export async function GET(request: Request) {
   }
   if (!("informe" in result)) {
     // Delivered: x-legal acknowledged the webhook and holds the report, so the
-    // evaluation is no longer kept here (lib/xlegal-job.ts → forgetDeliveredJob).
+    // evaluation is no longer kept here (lib/xlegal-closeout.ts → forgetDeliveredJob).
     // x-legal's reconciler only acts on a `done` that carries `result`.
     return NextResponse.json({
       status: "done",
