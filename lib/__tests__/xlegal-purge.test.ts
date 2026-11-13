@@ -127,6 +127,29 @@ describe("purgeExpiredXlegalData", () => {
     assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
   });
 
+  it("cron: a legacy result that could not be redacted is reported, not counted as redacted", async () => {
+    store.seed(
+      resultPath(JOB_A),
+      {
+        status: "done",
+        informe: INFORME,
+        pdfUrl: "u",
+        cliente: CLIENT,
+        completedAt: "2026-11-01T10:00:00.000Z",
+        webhookDelivered: true,
+      },
+      FRESH,
+    );
+    store.failPut = (pathname) => pathname === resultPath(JOB_A);
+    store.failDeleteAt.add(resultPath(JOB_A));
+    let report;
+    await captureLogs(async () => {
+      report = await purgeExpiredXlegalData("cron", { now: NOW }, store);
+    });
+    assert.equal(report!.redacted, 0);
+    assert.equal(report!.redactionFailed, 1);
+  });
+
   it("the opportunistic trigger does not read results (no backfill inside an evaluation)", async () => {
     store.seed(
       resultPath(JOB_A),

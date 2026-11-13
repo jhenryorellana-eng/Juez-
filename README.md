@@ -147,8 +147,10 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
 - **Si el webhook no llega**, el resultado completo y el PDF se quedan: son la red de
   reconciliación de `/api/xlegal/status`.
 - **Un job fallido** cuyo `evaluation.failed` x-legal aceptó conserva solo
-  `{ status: "error", error }`: se borran el job y el mapeo del token. La página embebida
-  sigue viendo el error (`GET /api/xlegal/run` lo lee del resultado).
+  `{ status: "error", error }`: se borra el job. El mapeo del token (`{ jobId }`, sin datos
+  del cliente) se deja: x-legal devuelve el intento y la página puede estar escribiendo el
+  de un reintento en ese momento. La página embebida sigue viendo el error
+  (`GET /api/xlegal/run` lo lee del resultado).
 - `GET /api/xlegal/run` sin job: un `jobId` que no tiene resultado (o cuyo resultado aún no
   se entregó) responde `404` sin preguntar a x-legal.
 - Si el presupuesto cierra el job mientras se genera, el PDF tardío no se guarda (y si ya

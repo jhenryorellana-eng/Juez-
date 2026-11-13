@@ -279,7 +279,10 @@ $400/$650 es el modelo de negocio y se queda tal cual.
         API y rutas del almacén (`lib/__tests__/`).
   - [x] El cierre del job sale a `lib/xlegal-closeout.ts` con I/O inyectable.
   - [x] Redacción: un reintento; si vuelve a fallar se borra el resultado completo.
-  - [x] Job fallido entregado: se borran job y mapeo; queda `{ status, error }`.
+  - [x] Job fallido entregado: se borra el job (el mapeo no, por la carrera con un
+        reintento); queda `{ status, error }`.
+  - [x] `storageDeleteAt` lanza si `del()` falla (salvo «ya no existe»): el fallback de la
+        redacción y el backfill del cron ya no dan por borrado lo que sigue ahí.
   - [x] PDF tardío tras cerrar el presupuesto: no se guarda o se borra.
   - [x] Lecturas/borrados por pathname exacto; `/api/upload` con lista blanca
         (`casos/`, `xlegal/docs/`).

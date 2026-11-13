@@ -149,14 +149,20 @@ export async function storageDelete(urls: string[]): Promise<void> {
   }
 }
 
-/** Borra un archivo por su pathname interno. */
+/**
+ * Borra un archivo por su pathname interno. Que ya no exista cuenta como
+ * borrado; cualquier otro fallo se LANZA, para que quien llama no dé por
+ * borrado algo que sigue ahí (los que no lo necesitan ya hacen `.catch`).
+ */
 export async function storageDeleteAt(pathname: string): Promise<void> {
   if (blobEnabled()) {
     const blob = await findExactBlob(pathname);
-    if (blob) await del(blob.url).catch(() => {});
+    if (blob) await del(blob.url);
     return;
   }
-  await fs.unlink(localFilePath(pathname)).catch(() => {});
+  await fs.unlink(localFilePath(pathname)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
 }
 
 /** An object in the store, as Vercel Blob's list() or the local disk describe it. */

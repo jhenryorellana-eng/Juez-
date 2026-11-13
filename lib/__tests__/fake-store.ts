@@ -28,6 +28,8 @@ export class FakeStore implements CloseoutDeps, PurgeDeps {
   webhookOk: (payload: XlegalWebhookPayload) => boolean = () => true;
   /** Refs that deleteMany must refuse. */
   failDelete = new Set<string>();
+  /** Pathnames that deleteAt must refuse (like storageDeleteAt when del() fails). */
+  failDeleteAt = new Set<string>();
   /** The clock put() stamps uploads with. */
   now = () => new Date("2026-11-12T08:00:00.000Z");
 
@@ -71,6 +73,7 @@ export class FakeStore implements CloseoutDeps, PurgeDeps {
   readJson = async <T>(pathname: string): Promise<T | null> => this.json<T>(pathname) ?? null;
 
   deleteAt = async (pathname: string): Promise<void> => {
+    if (this.failDeleteAt.has(pathname)) throw new Error("BLOB_DELETE_FAILED");
     this.objects.delete(pathname);
   };
 

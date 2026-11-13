@@ -81,6 +81,8 @@ export interface PurgeReport {
   maxDeletes: number | null;
   /** Delivered results written before 2026-11-12, reduced to their outcome (cron only). */
   redacted: number;
+  /** Of those, the ones whose report could be neither redacted nor deleted (in the log). */
+  redactionFailed: number;
   /**
    * Expired objects per folder (jobs, results, tokens, docs, informes…).
    * Counts only: a pathname under docs/ carries the client's file name.
@@ -110,13 +112,13 @@ export async function purgeExpiredXlegalData(
 
   // Reading results is a fetch per candidate: the cron's job, not the net's.
   const expiredSet = new Set(expired);
-  const redacted =
+  const { redacted, redactionFailed } =
     trigger === "cron"
       ? await redactLegacyDeliveredResults(
           objects.filter((o) => !expiredSet.has(o)),
           deps,
         )
-      : 0;
+      : { redacted: 0, redactionFailed: 0 };
 
   if (remaining === 0 && failed === 0) {
     const marker: PurgeMarker = { lastRunAt: now.toISOString(), trigger };
@@ -134,13 +136,14 @@ export async function purgeExpiredXlegalData(
     remaining,
     maxDeletes: maxDeletes ?? null,
     redacted,
+    redactionFailed,
     byFolder,
   };
-  const log = failed > 0 ? console.error : console.log;
+  const log = failed > 0 || redactionFailed > 0 ? console.error : console.log;
   log(
     `[xlegal:purge] ${trigger}: scanned ${report.scanned}, expired ${report.expired} ` +
       `${JSON.stringify(byFolder)}, deleted ${deleted}, failed ${failed}, ` +
-      `remaining ${remaining}, redacted ${redacted}`,
+      `remaining ${remaining}, redacted ${redacted}, redaction failed ${redactionFailed}`,
   );
   return report;
 }
@@ -158,8 +161,9 @@ export async function purgeExpiredXlegalData(
 async function redactLegacyDeliveredResults(
   objects: readonly StoredObject[],
   deps: PurgeDeps,
-): Promise<number> {
+): Promise<{ redacted: number; redactionFailed: number }> {
   let redacted = 0;
+  let redactionFailed = 0;
   for (const o of objects) {
     const jobId = resultJobId(o.pathname);
     if (!jobId || o.size <= REDACTED_RESULT_MAX_BYTES) continue;
@@ -167,13 +171,14 @@ async function redactLegacyDeliveredResults(
       const result = await deps.readJson<XlegalResult>(o.pathname);
       if (!isDeliveredFullResult(result)) continue;
       const job = await deps.readJson<Pick<XlegalJob, "tokenHash">>(jobPath(jobId));
-      await forgetDeliveredJob(jobId, job?.tokenHash, result.completedAt, deps);
-      redacted += 1;
+      if (await forgetDeliveredJob(jobId, job?.tokenHash, result.completedAt, deps)) redacted += 1;
+      else redactionFailed += 1;
     } catch (error) {
+      redactionFailed += 1;
       console.error(`[xlegal:purge] could not redact ${jobId}:`, safeErrorMessage(error));
     }
   }
-  return redacted;
+  return { redacted, redactionFailed };
 }
 
 /**

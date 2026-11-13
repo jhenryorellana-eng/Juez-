@@ -52,7 +52,10 @@ export async function GET(request: Request) {
 
   try {
     const report = await purgeExpiredXlegalData("cron");
-    return NextResponse.json(report, { status: report.failed > 0 ? 500 : 200 });
+    // 500 when something that should be gone is still there: the cron's
+    // failures then show up in Vercel instead of only in a log line.
+    const incomplete = report.failed > 0 || report.redactionFailed > 0;
+    return NextResponse.json(report, { status: incomplete ? 500 : 200 });
   } catch (error) {
     console.error("[xlegal:purge] cron: sweep failed:", (error as Error).message);
     return NextResponse.json({ error: "Purge failed." }, { status: 500 });

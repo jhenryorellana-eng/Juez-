@@ -89,12 +89,30 @@ describe("forgetDeliveredJob", () => {
   it("deletes the full result when the redaction fails twice, and logs no client data", async () => {
     store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
     store.failPut = (pathname) => pathname === resultPath(JOB_ID);
-    const logs = await captureLogs(() =>
-      forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store),
-    );
+    let forgotten: boolean | undefined;
+    const logs = await captureLogs(async () => {
+      forgotten = await forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store);
+    });
+    assert.equal(forgotten, true);
     assert.equal(store.has(resultPath(JOB_ID)), false);
     assert.equal(store.has(jobPath(JOB_ID)), false);
     assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
+  });
+
+  it("reports a full result it could neither redact nor delete, instead of claiming it is gone", async () => {
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    store.failDeleteAt.add(resultPath(JOB_ID));
+    let forgotten: boolean | undefined;
+    const logs = await captureLogs(async () => {
+      forgotten = await forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store);
+    });
+    assert.equal(forgotten, false);
+    assert.equal(store.has(resultPath(JOB_ID)), true);
+    assert.match(logs, /could not delete the unredacted result/);
+    assert.doesNotMatch(logs, /deleted instead of redacted/);
+    // The job record still goes: less client data is better than none removed.
+    assert.equal(store.has(jobPath(JOB_ID)), false);
   });
 });
 
@@ -153,15 +171,30 @@ describe("closeFailedJob", () => {
   const fail = () =>
     closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET" }, store);
 
-  it("delivered: keeps only { status, error } and deletes the job, its mapping and our documents", async () => {
+  it("delivered: keeps only { status, error } and deletes the job record and our documents", async () => {
     await fail();
 
     assert.deepEqual(store.json(resultPath(JOB_ID)), { status: "error", error: "TIMEOUT_BUDGET" });
     assert.equal(store.has(jobPath(JOB_ID)), false);
-    assert.equal(store.has(tokenMapPath(TOKEN_HASH)), false);
     assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
     assert.equal(store.webhooks[0].event, "evaluation.failed");
     assert.equal(store.webhooks[0].error, "TIMEOUT_BUDGET");
+  });
+
+  it("never touches the token mapping: a retry may be writing its own right now", async () => {
+    // x-legal returns the attempt when it accepts evaluation.failed, so the page
+    // can start a new job (and write a new mapping) while this close-out runs.
+    // The mapping only holds { jobId }, and resolveResumableJob already treats a
+    // mapping to an error result as "start fresh".
+    const original = store.readJson;
+    store.readJson = async <T>(pathname: string) => {
+      const value = await original<T>(pathname);
+      if (pathname === tokenMapPath(TOKEN_HASH)) store.seed(pathname, { jobId: OTHER_JOB_ID });
+      return value;
+    };
+    await fail();
+    assert.deepEqual(store.json(tokenMapPath(TOKEN_HASH)), { jobId: JOB_ID });
+    assert.equal(store.has(jobPath(JOB_ID)), false);
   });
 
   it("webhook failed: keeps the job record", async () => {
