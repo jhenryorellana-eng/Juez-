@@ -187,14 +187,32 @@ export interface XlegalJob {
   source?: "page" | "api";
 }
 
+/** A finished report that x-legal has not acknowledged yet: /api/xlegal/status serves it for reconciliation. */
+export interface XlegalReportResult {
+  status: "done";
+  informe: Informe;
+  pdfUrl: string;
+  cliente: ClienteInfo;
+  completedAt: string;
+  /**
+   * false until x-legal acknowledged the webhook with a 2xx. Results written
+   * before 2026-11-12 can say true and still carry the report; they age out
+   * with the 30-day sweep (lib/retention.ts).
+   */
+  webhookDelivered: boolean;
+}
+
+/**
+ * What is left once x-legal acknowledged the webhook: it holds the report, so
+ * nothing about the client or the evaluation stays here (lib/xlegal-job.ts).
+ */
+export interface XlegalDeliveredResult {
+  status: "done";
+  completedAt: string;
+  webhookDelivered: true;
+}
+
 export type XlegalResult =
-  | {
-      status: "done";
-      informe: Informe;
-      pdfUrl: string;
-      cliente: ClienteInfo;
-      completedAt: string;
-      /** false until x-legal acknowledged the webhook with a 2xx. */
-      webhookDelivered: boolean;
-    }
+  | XlegalReportResult
+  | XlegalDeliveredResult
   | { status: "error"; error: string };

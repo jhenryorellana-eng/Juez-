@@ -5,7 +5,7 @@
  *   para probar el flujo completo sin servicios externos. Las URLs locales se
  *   sirven mediante GET /api/dev/file?path=… (solo en desarrollo).
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { put, del, list } from "@vercel/blob";
 
@@ -141,4 +141,112 @@ export async function storageDeleteAt(pathname: string): Promise<void> {
     return;
   }
   await fs.unlink(localFilePath(pathname)).catch(() => {});
+}
+
+/** An object in the store, as Vercel Blob's list() or the local disk describe it. */
+export interface StoredObject {
+  pathname: string;
+  /** Last write: Blob's `uploadedAt`, or the file's mtime in local mode. */
+  uploadedAt: Date;
+  /** What storageDeleteMany takes: the blob URL, or the local URL in dev. */
+  ref: string;
+}
+
+/** Blob's list() returns at most 1000 per page. */
+const LIST_PAGE = 1000;
+
+/**
+ * Every object whose pathname starts with `prefix`, following list()'s cursor
+ * to the last page. Locally it walks `.dev-store/` from the prefix's folder.
+ */
+export async function storageList(prefix: string): Promise<StoredObject[]> {
+  assertSafe(prefix);
+  if (blobEnabled()) {
+    const objects: StoredObject[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await list({ prefix, cursor, limit: LIST_PAGE });
+      for (const blob of page.blobs) {
+        objects.push({
+          pathname: blob.pathname,
+          uploadedAt: new Date(blob.uploadedAt),
+          ref: blob.url,
+        });
+      }
+      cursor = page.hasMore ? page.cursor : undefined;
+    } while (cursor);
+    return objects;
+  }
+  return listLocal(prefix);
+}
+
+async function listLocal(prefix: string): Promise<StoredObject[]> {
+  const folder = prefix.slice(0, prefix.lastIndexOf("/") + 1);
+  const objects: StoredObject[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // a folder that does not exist simply holds nothing
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const pathname = path.relative(BASE_DIR, full).split(path.sep).join("/");
+      if (!pathname.startsWith(prefix)) continue;
+      const { mtime } = await fs.stat(full);
+      objects.push({ pathname, uploadedAt: mtime, ref: localUrl(pathname) });
+    }
+  }
+
+  await walk(path.join(BASE_DIR, folder));
+  return objects;
+}
+
+/** URLs per del() request, so one huge sweep is not one huge request. */
+const DELETE_BATCH = 100;
+
+/**
+ * Deletes objects by `ref` (as storageList returns them). Unlike storageDelete,
+ * it reports what it could NOT delete instead of swallowing it: a retention
+ * sweep that fails in silence is exactly the failure it exists to prevent.
+ */
+export async function storageDeleteMany(
+  refs: string[],
+): Promise<{ deleted: number; failed: number }> {
+  let deleted = 0;
+  let failed = 0;
+
+  for (const url of refs.filter(isLocalUrl)) {
+    try {
+      await fs.unlink(localFilePath(pathFromLocalUrl(url)));
+      deleted += 1;
+    } catch (error) {
+      // Already gone is as good as deleted.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") deleted += 1;
+      else failed += 1;
+    }
+  }
+
+  const remotes = refs.filter((u) => !isLocalUrl(u));
+  for (let i = 0; i < remotes.length; i += DELETE_BATCH) {
+    const batch = remotes.slice(i, i + DELETE_BATCH);
+    try {
+      await del(batch);
+      deleted += batch.length;
+    } catch (error) {
+      failed += batch.length;
+      console.error(
+        `[storage] could not delete a batch of ${batch.length}:`,
+        (error as Error).message,
+      );
+    }
+  }
+  return { deleted, failed };
 }

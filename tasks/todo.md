@@ -260,6 +260,21 @@ $400/$650 es el modelo de negocio y se queda tal cual.
 - El iframe (`/xlegal`, `/run`, `frame-ancestors`) queda en su sitio hasta que
       ContyGo despliegue el flujo nuevo; se retira en un cambio aparte.
 
+## v10 — Retención de `xlegal/`: se olvida al cliente al entregar y se purga a los 30 días (2026-11-12)
+- Decisión del dueño (opción C + 30 días). Antes, tras entregar, Juez guardaba para
+      siempre (Blob `public`) el resultado completo con nombre, correo, país, lista de
+      documentos y evaluación, más el job y el mapeo del token.
+- Al recibir `2xx` del webhook: `results/<jobId>.json` → `{ status, completedAt,
+      webhookDelivered: true }`; se borran `jobs/<jobId>.json` y el `tokens/<hash>.json` que
+      apunte a ese job (`forgetDeliveredJob`, `lib/xlegal-job.ts`). `/status` responde `done`
+      sin `result` (el reconciliador de x-legal solo actúa con `result`); `GET /run` sin job
+      pregunta a x-legal por el enlace del PDF; la UI muestra la descarga sin score.
+- Purga diaria de todo `xlegal/` con más de 30 días (`lib/retention.ts`, puro;
+      `lib/xlegal-purge.ts`): cron de Vercel → `GET /api/xlegal/purge` con `CRON_SECRET`
+      (sin él, `503`), y red en `POST /api/xlegal/jobs` vía `after()` una vez cada 24 h.
+- Files API de Gemini: los PDF subidos se borran en un `finally` (`GeminiUploads`).
+- Fuera de alcance: `pro/`.
+
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
 análisis profundo + genera el "Informe de Evaluación y Propuesta de Reforzamiento"

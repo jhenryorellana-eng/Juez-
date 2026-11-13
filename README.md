@@ -90,6 +90,7 @@ npm run dev                          # http://localhost:3000
 | `GEMINI_API_KEY` | Sí | Evaluación con IA (sin ella, la app cae a modo demo local) |
 | `BLOB_READ_WRITE_TOKEN` | Para archivos > 3.5 MB y todo el premium | Vercel → Storage → Create → Blob |
 | `STRIPE_SECRET_KEY` | Para cobrar el informe de $50 | dashboard.stripe.com/apikeys |
+| `CRON_SECRET` | Para la purga diaria de `xlegal/` | Valor aleatorio largo en Vercel → Settings → Environment Variables (Production). Vercel lo envía solo al cron |
 
 ## Despliegue en Vercel
 1. En [vercel.com/new](https://vercel.com/new), importa el repositorio.
@@ -109,7 +110,8 @@ Contrato v1 (resumen):
 - `POST …/sessions/{token}/consume` — consume el intento (idempotente por `jobId`; 409 sin intentos).
 - `POST {XLEGAL_API_URL}/api/webhooks/juez` — Juez entrega `evaluation.completed|failed`,
   firmado con HMAC-SHA256 del raw body en `x-juez-signature`. Reintentos 2 s / 8 s / 30 s.
-  Tras el `200`, Juez borra documentos y PDF (x-legal ya lo tiene).
+  Tras el `200`, Juez borra documentos y PDF (x-legal ya lo tiene) y olvida al cliente
+  (ver *Retención de `xlegal/`*).
 - `GET /api/xlegal/status?jobId=` (en Juez) — reconciliación si el webhook no llegó.
   Protegido con `x-api-key`. **Decisión v1**: la misma `XLEGAL_API_KEY` sirve en ambas
   direcciones (un solo secreto compartido).
@@ -133,6 +135,28 @@ directamente y ya no hacen falta la sesión ni el `consume` del lado de Juez:
 Variables: `XLEGAL_API_URL`, `XLEGAL_API_KEY`, `XLEGAL_WEBHOOK_SECRET` (server-only;
 sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
 
+### Retención de `xlegal/` (desde 2026-11-12)
+- **Al entregar** (x-legal responde `2xx` al webhook): además de documentos y PDF,
+  `xlegal/results/<jobId>.json` se reescribe a solo `{ status, completedAt, webhookDelivered: true }`
+  —sin score, nivel, headline, nombre, correo, país ni documentos— y se borran
+  `xlegal/jobs/<jobId>.json` y su `xlegal/tokens/<tokenHash>.json`. `/api/xlegal/status`
+  responde entonces `done` sin `result`; `GET /api/xlegal/run` pide el enlace del PDF a x-legal.
+- **Si el webhook no llega**, el resultado completo y el PDF se quedan: son la red de
+  reconciliación de `/api/xlegal/status`.
+- **A los 30 días**, todo lo que haya bajo `xlegal/` (jobs, results, tokens, docs, informes)
+  se borra, según la fecha de subida del blob (`uploadedAt`; en local, el `mtime`). Reglas
+  en `lib/retention.ts`, barrido en `lib/xlegal-purge.ts`.
+  - `GET /api/xlegal/purge`, llamado una vez al día por el cron de `vercel.json`, con
+    `Authorization: Bearer <CRON_SECRET>`. **Hace falta `CRON_SECRET` en Vercel**
+    (Production): sin ella la ruta responde `503`, no borra nada y lo deja en el log.
+  - Red sin secreto nuevo: cada `POST /api/xlegal/jobs` autenticado lanza el barrido en
+    segundo plano (`after()`) como mucho una vez cada 24 h (marcador
+    `xlegal/.purge-marker.json`, que el barrido no borra).
+- **Fuera de alcance**: `pro/` (flujo premium propio, el cliente pagó y puede volver a
+  descargar) y el demo.
+- Los PDF grandes que se suben a la Files API de Gemini se borran al terminar cada
+  evaluación, en todos los flujos.
+
 Prueba local sin un x-legal real:
 ```bash
 node scripts/mock-xlegal.mjs        # mock en :4545 (token sembrado, verifica la firma)
@@ -147,7 +171,8 @@ npm run dev
 - Las claves solo se usan en el servidor; `.env.local` está en `.gitignore`.
 - **Privacidad**: los documentos no se guardan — se procesan y los blobs se borran al
   terminar. El resultado del demo se sirve una sola vez y se borra; el resultado
-  premium sí se conserva (el cliente pagó y puede recargar/volver a descargar).
+  premium sí se conserva (el cliente pagó y puede recargar/volver a descargar). Lo de
+  `/xlegal` se reduce al entregar y se purga a los 30 días (ver arriba).
 - Verificación de pago server-side (`payment_status === "paid"`) con job en Blob como
   anti-reuso de sesiones.
 - Rate-limit en memoria por IP (evaluate 6/min, checkout 5/min, pro-run 10/min). Para

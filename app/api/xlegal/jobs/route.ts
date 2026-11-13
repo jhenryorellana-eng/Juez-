@@ -10,6 +10,7 @@ import {
   resultPath,
 } from "@/lib/xlegal";
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
+import { runPurgeIfDue } from "@/lib/xlegal-purge";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { ACCEPTED_EXTENSIONS, MAX_FILES } from "@/lib/analysis";
 import type { ClienteInfo, XlegalJob, XlegalResult } from "@/lib/types";
@@ -116,10 +117,12 @@ export async function POST(request: Request) {
   // Idempotency: this jobId already started (or finished) — nothing to do.
   const existingResult = await storageReadJson<XlegalResult>(resultPath(jobId));
   if (existingResult) {
+    scheduleRetentionSweep();
     return NextResponse.json({ jobId, status: existingResult.status }, { status: 202 });
   }
   const existingJob = await storageReadJson<XlegalJob>(jobPath(jobId));
   if (existingJob) {
+    scheduleRetentionSweep();
     return NextResponse.json({ jobId, status: existingJob.status }, { status: 202 });
   }
 
@@ -140,5 +143,17 @@ export async function POST(request: Request) {
 
   const origin = resolveOrigin(request);
   after(() => processXlegalJob(jobId, job, token, origin, requestStartedAt));
+  scheduleRetentionSweep();
   return NextResponse.json({ jobId, status: "processing" }, { status: 202 });
+}
+
+/**
+ * Safety net for the daily cron (GET /api/xlegal/purge): an accepted request
+ * also sweeps `xlegal/` in the background, at most once every 24 h — the marker
+ * in the store decides (lib/xlegal-purge.ts). It needs no secret beyond the
+ * x-api-key this request already proved, never delays the 202 (after() runs
+ * once the response is sent), and runs alongside the evaluation, not before it.
+ */
+function scheduleRetentionSweep(): void {
+  after(() => runPurgeIfDue("jobs"));
 }

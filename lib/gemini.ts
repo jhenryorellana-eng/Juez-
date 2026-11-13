@@ -118,8 +118,47 @@ export type PreparedDoc =
   | { kind: "pdf"; name: string; buffer: Buffer }
   | { kind: "text"; name: string; text: string };
 
+/**
+ * The files one evaluation uploaded to the Gemini Files API. They are the
+ * client's documents, and Google keeps them for 48 h unless they are deleted,
+ * so every evaluation deletes its own as soon as it is over (release()).
+ */
+class GeminiUploads {
+  private names: string[] = [];
+  private released = false;
+
+  track(name: string | undefined): void {
+    if (!name) return;
+    // An upload that lands after the evaluation already gave up (a sibling
+    // upload failed and Promise.all rejected early) is deleted on arrival.
+    if (this.released) void deleteGeminiFile(name);
+    else this.names.push(name);
+  }
+
+  async release(): Promise<void> {
+    this.released = true;
+    const names = this.names.splice(0);
+    await Promise.all(names.map(deleteGeminiFile));
+  }
+}
+
+/** Never throws: cleanup must not break an evaluation (Google drops the file after 48 h anyway). */
+async function deleteGeminiFile(name: string): Promise<void> {
+  const client = getClient();
+  if (!client) return;
+  try {
+    await client.files.delete({ name });
+  } catch (err) {
+    console.error("[gemini:files] could not delete an uploaded file:", (err as Error).message);
+  }
+}
+
 /** Sube un PDF grande a la Files API de Gemini y espera a que esté ACTIVO. */
-async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
+async function uploadPdfToGemini(
+  name: string,
+  buffer: Buffer,
+  uploads: GeminiUploads,
+): Promise<Part> {
   const client = getClient();
   if (!client) throw new Error("NO_API_KEY");
 
@@ -128,6 +167,9 @@ async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
     file: blob,
     config: { mimeType: "application/pdf", displayName: name },
   });
+  // Tracked before waiting for ACTIVE: a file that never activates still
+  // exists on Google's side and must be deleted too.
+  uploads.track(file.name);
 
   const deadline = Date.now() + 150_000;
   while (file.state === FileState.PROCESSING && Date.now() < deadline) {
@@ -141,7 +183,7 @@ async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
 }
 
 /** Convierte los documentos en partes del mensaje (inline, Files API o texto). */
-async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
+async function buildParts(docs: PreparedDoc[], uploads: GeminiUploads): Promise<Part[]> {
   // Paso 1 — decidir qué viaja inline. El presupuesto de 14 MB se reparte en
   // orden de documento, así que esta decisión tiene que seguir siendo secuencial.
   let inlineBudget = INLINE_TOTAL_LIMIT;
@@ -171,18 +213,35 @@ async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
           },
         ];
       }
-      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer)];
+      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer, uploads)];
     }),
   );
   return parts.flat();
 }
 
 /**
+ * Runs one evaluation and deletes whatever it uploaded to the Files API, however
+ * it ends — success, model error, or a failed upload.
+ */
+async function withGeminiUploads<T>(run: (uploads: GeminiUploads) => Promise<T>): Promise<T> {
+  const uploads = new GeminiUploads();
+  try {
+    return await run(uploads);
+  } finally {
+    await uploads.release();
+  }
+}
+
+/**
  * Evalúa el caso a partir de 1-10 documentos.
  * Usa gemini-3.5-flash; si está sobrecargado, cae a gemini-3.1-flash-lite.
  */
-export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
-  const parts = await buildParts(docs);
+export function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
+  return withGeminiUploads((uploads) => runEvaluation(docs, uploads));
+}
+
+async function runEvaluation(docs: PreparedDoc[], uploads: GeminiUploads): Promise<Verdict> {
+  const parts = await buildParts(docs, uploads);
   const contents: ContentListUnion = [
     ...parts,
     { text: buildEvaluationUserPrompt(docs.length) },
@@ -424,12 +483,21 @@ function buildInformeSchema(variant: InformeVariant): Schema {
  * mantiene en LOW porque MEDIUM costaba minutos por documento y un expediente
  * voluminoso agotaba el presupuesto entero sin llegar a producir nada.
  */
-export async function generateInforme(
+export function generateInforme(
   docs: PreparedDoc[],
   cliente: ClienteInfo,
   variant: InformeVariant = "pro",
 ): Promise<Informe> {
-  const parts = await buildParts(docs);
+  return withGeminiUploads((uploads) => runInforme(docs, cliente, variant, uploads));
+}
+
+async function runInforme(
+  docs: PreparedDoc[],
+  cliente: ClienteInfo,
+  variant: InformeVariant,
+  uploads: GeminiUploads,
+): Promise<Informe> {
+  const parts = await buildParts(docs, uploads);
   const contents: ContentListUnion = [
     ...parts,
     { text: buildEvaluationUserPrompt(docs.length) },
