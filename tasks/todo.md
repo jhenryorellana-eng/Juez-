@@ -309,7 +309,10 @@ $400/$650 es el modelo de negocio y se queda tal cual.
   - [x] `POST /run` solo acepta URLs de Blob bajo `xlegal/docs/`; el cierre del job solo
         borra bajo `xlegal/docs/` y `xlegal/informes/` (ya no el marcador ni un resultado).
   - [x] Si no se puede escribir el resultado, el webhook sale igual; si tampoco se entrega,
-        se borran el PDF y los documentos propios.
+        se borran el PDF y los documentos propios, pero solo cuando ningún resultado puede
+        apuntar al PDF (`/codex review` [P2]: un `put` que falla puede haber escrito igual):
+        si el resultado existe se conserva todo; si no, se borra primero el resultado y, si
+        ese borrado falla, el PDF se queda.
   - [x] `tsx` 4.23.15 (esbuild 0.28.2): fuera GHSA-g7r4-m6w7-qqqr. `ignore-scripts`
         queda para el PR de `npm audit` (hay que comprobar sharp en el build de Vercel).
   - [x] `storage-local.test.ts`: el EPERM de Windows al borrar la carpeta temporal se

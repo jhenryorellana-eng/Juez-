@@ -211,6 +211,35 @@ describe("deliverReport", () => {
     assert.equal(store.has(jobPath(JOB_ID)), true);
   });
 
+  it("a result write that committed but answered an error keeps the PDF it points at", async () => {
+    // Blob stored the result but the response was lost: /api/xlegal/status
+    // serves that result, so its pdfUrl must still work for reconciliation.
+    const put = store.put;
+    store.put = async (pathname: string, data: Buffer | string) => {
+      const url = await put(pathname, data);
+      if (pathname === resultPath(JOB_ID) && store.putCalls.filter((p) => p === pathname).length === 1) {
+        throw new Error("BLOB_RESPONSE_LOST");
+      }
+      return url;
+    };
+    store.webhookOk = () => false;
+    await captureLogs(() => report());
+
+    assert.equal(store.json<{ webhookDelivered?: boolean }>(resultPath(JOB_ID))?.webhookDelivered, false);
+    assert.equal(store.has(informePdfPath(JOB_ID)), true);
+    assert.equal(store.has(jobPath(JOB_ID)), true);
+  });
+
+  it("keeps the PDF when it cannot confirm that no result points at it", async () => {
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    store.webhookOk = () => false;
+    store.readJson = async () => null; // a failed read looks like "absent"
+    store.failDeleteAt.add(resultPath(JOB_ID));
+    await captureLogs(() => report());
+
+    assert.equal(store.has(informePdfPath(JOB_ID)), true);
+  });
+
   it("only deletes our blobs under xlegal/docs/ or xlegal/informes/, never another path of the store", async () => {
     const marker = store.seed("xlegal/.purge-marker.json", { lastRunAt: "x" });
     const demo = store.seed("casos/demo.pdf", "pdf");

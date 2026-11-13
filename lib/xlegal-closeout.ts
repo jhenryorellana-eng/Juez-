@@ -161,17 +161,47 @@ export async function deliverReport(
     await deps.deleteUrls(ourCopies).catch(() => {});
     await forgetDeliveredJob(jobId, job.tokenHash, completedAt, deps);
   } else if (!resultStored) {
-    // Neither delivered nor stored: /api/xlegal/status has no result to serve,
-    // so nothing can reconcile this report — x-legal will give the attempt back
-    // (STALE_NO_RESULT). Keep no copy of the documents or the evaluation. The
-    // job record stays: it is then the only trace of the job.
-    await deps.deleteUrls(ourCopies).catch(() => {});
-    console.error(`[xlegal:job] ${jobId} result not saved and webhook failed: PDF and documents deleted`);
+    await discardUnreconcilableReport(jobId, ourCopies, deps);
   }
   // If every webhook attempt failed but the result is stored, the PDF and the
   // full result stay put: /api/xlegal/status is the reconciliation path and
   // x-legal will pull the result from there. The 30-day sweep
   // (lib/xlegal-purge.ts) is their limit.
+}
+
+/**
+ * Neither delivered nor stored: /api/xlegal/status has no result to serve, so
+ * nothing can reconcile this report — x-legal will give the attempt back
+ * (STALE_NO_RESULT). Keep no copy of the documents or the evaluation. The job
+ * record stays: it is then the only trace of the job.
+ *
+ * But a put() that threw may still have committed (the response was lost), and
+ * a result that /status serves must keep its PDF. So the PDF goes only once no
+ * result can point at it: a result that turns out to exist is kept, with
+ * everything, for reconciliation; an absent one (or a read that failed, which
+ * looks the same) is deleted first; and if that delete fails, the PDF stays.
+ */
+async function discardUnreconcilableReport(
+  jobId: string,
+  ourCopies: string[],
+  deps: CloseoutDeps,
+): Promise<void> {
+  const existing = await deps.readJson<XlegalResult>(resultPath(jobId)).catch(() => null);
+  if (existing) {
+    console.error(`[xlegal:job] ${jobId} the result was stored after all: kept for reconciliation`);
+    return;
+  }
+  try {
+    await deps.deleteAt(resultPath(jobId));
+  } catch (error) {
+    console.error(
+      `[xlegal:job] ${jobId} could not confirm that no result points at the PDF: PDF kept:`,
+      safeErrorMessage(error),
+    );
+    return;
+  }
+  await deps.deleteUrls(ourCopies).catch(() => {});
+  console.error(`[xlegal:job] ${jobId} result not saved and webhook failed: PDF and documents deleted`);
 }
 
 /**
