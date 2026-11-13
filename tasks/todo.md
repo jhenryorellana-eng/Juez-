@@ -324,6 +324,10 @@ $400/$650 es el modelo de negocio y se queda tal cual.
           `{ status, completedAt, webhookDelivered }`: es lo que impide que un reintento de
           `POST /jobs` con ese `jobId` genere otra vez. Si tampoco se puede, queda en el log
           (x-legal descarta el webhook repetido por `{jobId}:completed`).
+  - [x] `/codex review`, tercera pasada, 1 [P2]: cada `files.delete` de Gemini se corta a los
+        5 s (`DELETE_TIMEOUT_MS`, con `abortSignal`): `release()` corre antes de devolver un
+        informe ya generado, y un borrado colgado podía agotar el presupuesto y convertirlo en
+        `TIMEOUT_BUDGET`.
   - [ ] `CRON_SECRET` en Vercel (Production) — paso manual, antes del merge.
   - [ ] Tras el merge: en el log del primer cron de Production
         (`[xlegal:purge] cron: scanned …`) confirmar `failed 0` y `redaction failed 0`:

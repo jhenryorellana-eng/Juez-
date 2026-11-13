@@ -119,11 +119,14 @@ export type PreparedDoc =
   | { kind: "pdf"; name: string; buffer: Buffer }
   | { kind: "text"; name: string; text: string };
 
-/** Deletes one file from the Files API (GeminiUploads logs a failure, never throws it). */
-async function deleteGeminiFile(name: string): Promise<void> {
+/**
+ * Deletes one file from the Files API (GeminiUploads logs a failure, never
+ * throws it, and aborts the request after DELETE_TIMEOUT_MS).
+ */
+async function deleteGeminiFile(name: string, signal: AbortSignal): Promise<void> {
   const client = getClient();
   if (!client) return;
-  await client.files.delete({ name });
+  await client.files.delete({ name, config: { abortSignal: signal } });
 }
 
 /** Sube un PDF grande a la Files API de Gemini y espera a que esté ACTIVO. */

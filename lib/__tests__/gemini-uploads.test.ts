@@ -67,6 +67,28 @@ describe("GeminiUploads", () => {
     assert.match(logs, /could not delete/);
   });
 
+  it("a delete that hangs is cut off: release() does not hold back a finished report", async () => {
+    // withGeminiUploads awaits release() before handing back the report: an
+    // unbounded files.delete could spend the job's budget and turn a ready
+    // report into TIMEOUT_BUDGET (Codex [P2]).
+    const signals: AbortSignal[] = [];
+    const { deleted, deleteFile } = recorder();
+    const uploads = new GeminiUploads(async (name, signal) => {
+      signals.push(signal);
+      if (name === "files/hung") return new Promise<void>(() => {});
+      return deleteFile(name);
+    }, 30);
+    await uploads.upload(async () => ({ name: "files/hung" }));
+    await uploads.upload(async () => ({ name: "files/ok" }));
+
+    const started = Date.now();
+    const logs = await captureLogs(() => uploads.release());
+    assert.ok(Date.now() - started < 1000, "release() waited for the hung delete");
+    assert.deepEqual(deleted, ["files/ok"]);
+    assert.match(logs, /timed out/);
+    assert.equal(signals[0].aborted, true); // files/hung, the first one deleted
+  });
+
   it("ignores an upload without a name", async () => {
     const { deleted, deleteFile } = recorder();
     const uploads = new GeminiUploads(deleteFile);
