@@ -6,6 +6,7 @@ import {
   forgetDeliveredJob,
   informePdfPath,
   pollAnswerWithoutJob,
+  pollWithoutJob,
   safeErrorMessage,
   type JobState,
 } from "../xlegal-closeout";
@@ -110,6 +111,35 @@ describe("forgetDeliveredJob", () => {
     assert.equal(store.has(resultPath(JOB_ID)), false);
     assert.equal(store.has(jobPath(JOB_ID)), false);
     assert.deepEqual(store.json(tokenMapPath(TOKEN_HASH)), { jobId: JOB_ID });
+  });
+
+  it("after deleting the unredactable result, tries once more to leave the completion record", async () => {
+    // Without any record of the jobId, a retried POST /api/xlegal/jobs for it
+    // would start a second generation (Codex [P2]).
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    store.failPut = (pathname, attempt) => pathname === resultPath(JOB_ID) && attempt <= 2;
+    let forgotten: boolean | undefined;
+    await captureLogs(async () => {
+      forgotten = await forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store);
+    });
+    assert.equal(forgotten, true);
+    assert.deepEqual(store.json(resultPath(JOB_ID)), {
+      status: "done",
+      completedAt: "2026-11-12T08:00:00.000Z",
+      webhookDelivered: true,
+    });
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    // The record answers the page's poll now: the mapping can go too.
+    assert.equal(store.has(tokenMapPath(TOKEN_HASH)), false);
+  });
+
+  it("says so when no completion record could be left at all", async () => {
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    const logs = await captureLogs(() =>
+      forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store),
+    );
+    assert.match(logs, /no completion record left/);
   });
 
   it("reports a full result it could neither redact nor delete, instead of claiming it is gone", async () => {
@@ -296,7 +326,61 @@ describe("closeFailedJob", () => {
   });
 });
 
+describe("pollWithoutJob", () => {
+  it("a delivered report whose result could be neither redacted nor deleted still asks x-legal (Codex [P2])", async () => {
+    // The job is gone, the full result is still there with webhookDelivered
+    // false, and the mapping was kept: the page must not poll until it times out.
+    store.seed(resultPath(JOB_ID), {
+      status: "done",
+      informe: INFORME,
+      pdfUrl: "u",
+      cliente: CLIENT,
+      completedAt: "x",
+      webhookDelivered: false,
+    });
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    store.failDeleteAt.add(resultPath(JOB_ID));
+    await captureLogs(() => forgetDeliveredJob(JOB_ID, TOKEN_HASH, "x", store));
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+
+    assert.equal((await pollWithoutJob(JOB_ID, TOKEN_HASH, store)).answer, "ask-xlegal");
+  });
+
+  it("does not read the mapping when the result already decides", async () => {
+    store.seed(resultPath(JOB_ID), { status: "error", error: "TIMEOUT_BUDGET" });
+    const read: string[] = [];
+    const original = store.readJson;
+    store.readJson = async <T>(pathname: string): Promise<T | null> => {
+      read.push(pathname);
+      return original<T>(pathname);
+    };
+    const { answer, result } = await pollWithoutJob(JOB_ID, TOKEN_HASH, store);
+    assert.equal(answer, "error");
+    assert.deepEqual(result, { status: "error", error: "TIMEOUT_BUDGET" });
+    assert.deepEqual(read, [resultPath(JOB_ID)]);
+  });
+
+  it("an unknown jobId is not found, and another token's mapping does not count", async () => {
+    assert.equal((await pollWithoutJob(OTHER_JOB_ID, TOKEN_HASH, store)).answer, "not-found");
+    store.seed(tokenMapPath(TOKEN_HASH), { jobId: OTHER_JOB_ID });
+    assert.equal((await pollWithoutJob(JOB_ID, TOKEN_HASH, store)).answer, "not-found");
+  });
+});
+
 describe("pollAnswerWithoutJob", () => {
+  it("asks x-legal for an undelivered report when the token's mapping points at it", () => {
+    const undelivered: XlegalResult = {
+      status: "done",
+      informe: INFORME,
+      pdfUrl: "u",
+      cliente: CLIENT,
+      completedAt: "x",
+      webhookDelivered: false,
+    };
+    assert.equal(pollAnswerWithoutJob(undelivered, true), "ask-xlegal");
+    assert.equal(pollAnswerWithoutJob({ status: "error", error: "X" }, true), "error");
+  });
+
   it("answers the error of a failed job", () => {
     const result: XlegalResult = { status: "error", error: "TIMEOUT_BUDGET" };
     assert.equal(pollAnswerWithoutJob(result), "error");

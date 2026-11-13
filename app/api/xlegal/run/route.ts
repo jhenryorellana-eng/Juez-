@@ -14,7 +14,7 @@ import {
   tokenMapPath,
 } from "@/lib/xlegal";
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
-import { pollAnswerWithoutJob } from "@/lib/xlegal-closeout";
+import { pollWithoutJob } from "@/lib/xlegal-closeout";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 import type { XlegalJob, XlegalResult } from "@/lib/types";
@@ -71,27 +71,22 @@ export async function GET(request: Request) {
  * The job record is gone. Since 2026-11-12 that is what a closed job looks
  * like: once x-legal acknowledges the webhook (report or failure), the record
  * (name, email, documents) is deleted — possibly while this client is still
- * polling. The result decides (lib/xlegal-closeout.ts → pollAnswerWithoutJob):
+ * polling. The result decides (lib/xlegal-closeout.ts → pollWithoutJob):
  *  - a failed job → its error code, the only thing kept of it;
  *  - a delivered report → x-legal is the source of truth, so ask it: if this
  *    token's report is there, the job is done. The jobId cannot be checked
  *    against the token any more, but nothing leaks: the answer is only this
  *    token's own download link, which the page already hands to whoever holds
  *    the token;
- *  - no result, but this token's own mapping points at the jobId (a delivery
- *    whose redaction failed, so the result was deleted) → ask x-legal as well;
+ *  - otherwise, if this token's own mapping points at the jobId (a delivery
+ *    whose redaction failed: the result was deleted, or still says
+ *    `webhookDelivered: false` because not even that worked) → ask x-legal too;
  *  - anything else (an unknown jobId included) → 404, which the client treats
  *    as "keep polling". A made-up jobId never reaches x-legal.
  */
 async function answerWithoutJob(id: string, token: string) {
   const notFound = () => NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
-  const result = await storageReadJson<XlegalResult>(resultPath(id));
-  // Only without a result: the token's mapping is what still binds this jobId
-  // to the token once the delivered result had to be deleted.
-  const mapping = result
-    ? null
-    : await storageReadJson<{ jobId?: string }>(tokenMapPath(hashToken(token)));
-  const answer = pollAnswerWithoutJob(result, mapping?.jobId === id);
+  const { answer, result } = await pollWithoutJob(id, hashToken(token));
   if (answer === "error" && result?.status === "error") {
     return NextResponse.json({ status: "error", error: result.error });
   }

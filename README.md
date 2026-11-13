@@ -154,7 +154,8 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   de un reintento en ese momento. La página embebida sigue viendo el error
   (`GET /api/xlegal/run` lo lee del resultado).
 - `GET /api/xlegal/run` sin job: un `jobId` que no tiene resultado (o cuyo resultado aún no
-  se entregó) responde `404` sin preguntar a x-legal.
+  se entregó) responde `404` sin preguntar a x-legal, salvo que el mapeo de ese mismo token
+  apunte a ese `jobId` (una entrega cuya redacción falló): entonces pregunta a x-legal.
 - Si el presupuesto cierra el job mientras se genera, el PDF tardío no se guarda (y si ya
   se estaba subiendo, se borra). Si vence cuando el informe ya estaba listo (durante el
   webhook), el job espera a que termine el cierre y se olvide al cliente.

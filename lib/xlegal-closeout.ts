@@ -218,12 +218,16 @@ async function discardUnreconcilableReport(
  *  - GET /api/xlegal/run, with the job gone, asks x-legal for the download link.
  *
  * If the redaction cannot be written (twice), the full result is DELETED rather
- * than left behind: x-legal already has the report and nobody asks for this
- * jobId after a 2xx — and a result with `webhookDelivered: false` would be
- * served by /status as if it had never been delivered. The token mapping is
- * then KEPT: with no result left it is what ties this jobId to the token, so a
- * page still polling GET /api/xlegal/run finds its report (pollAnswerWithoutJob).
- * It holds only `{ jobId }`; the 30-day sweep removes it.
+ * than left behind: x-legal already has the report — and a result with
+ * `webhookDelivered: false` would be served by /status as if it had never been
+ * delivered. Then the redaction is written once more, now that the report is
+ * gone: it is the completion record that keeps a retried POST /api/xlegal/jobs
+ * for this jobId from starting a second generation. If even that fails, nothing
+ * of the jobId is left (logged; x-legal still drops the duplicate webhook by
+ * `{jobId}:completed`). The token mapping is KEPT whenever no redacted result
+ * was written: it is then what ties this jobId to the token, so a page still
+ * polling GET /api/xlegal/run finds its report (pollWithoutJob). It holds only
+ * `{ jobId }`; the 30-day sweep removes it.
  *
  * Each step stands on its own: one failing must not keep the others from
  * running, and the 30-day sweep is the net for whatever survives.
@@ -269,6 +273,17 @@ export async function forgetDeliveredJob(
     } catch (error) {
       console.error(
         `[xlegal:job] ${jobId} could not delete the unredacted result:`,
+        safeErrorMessage(error),
+      );
+    }
+  }
+  if (!redacted && reportGone) {
+    try {
+      await deps.put(resultPath(jobId), body, "application/json");
+      redacted = true;
+    } catch (error) {
+      console.error(
+        `[xlegal:job] ${jobId} no completion record left (a retried jobId would start over):`,
         safeErrorMessage(error),
       );
     }
@@ -381,8 +396,10 @@ export async function closeFailedJob(
  * result decides instead:
  *  - an error result → the error code (all that is kept of a failed job);
  *  - a delivered result → ask x-legal for this token's download link;
- *  - no result, but the token's own mapping points at this jobId (a delivery
- *    whose redaction failed and whose result was deleted) → ask x-legal too;
+ *  - otherwise, if the token's own mapping points at this jobId → ask x-legal
+ *    too. That is a delivery whose redaction failed: either the result was
+ *    deleted, or it could not even be deleted and still says
+ *    `webhookDelivered: false` (forgetDeliveredJob keeps the mapping for both);
  *  - anything else (an unknown jobId, a report not delivered yet) → 404, which
  *    the page treats as "keep polling". A made-up id never reaches x-legal.
  */
@@ -390,10 +407,27 @@ export function pollAnswerWithoutJob(
   result: XlegalResult | null,
   tokenMappingPointsHere = false,
 ): "error" | "ask-xlegal" | "not-found" {
-  if (!result) return tokenMappingPointsHere ? "ask-xlegal" : "not-found";
-  if (result.status === "error") return "error";
-  if (result.webhookDelivered === true) return "ask-xlegal";
-  return "not-found";
+  if (result?.status === "error") return "error";
+  if (result?.webhookDelivered === true) return "ask-xlegal";
+  return tokenMappingPointsHere ? "ask-xlegal" : "not-found";
+}
+
+/**
+ * Reads what pollAnswerWithoutJob needs: the result and, only when the result
+ * does not decide on its own, whether the token's mapping points at this jobId.
+ */
+export async function pollWithoutJob(
+  jobId: string,
+  tokenHash: string,
+  deps: Pick<CloseoutDeps, "readJson"> = defaultCloseoutDeps,
+): Promise<{ answer: "error" | "ask-xlegal" | "not-found"; result: XlegalResult | null }> {
+  const result = await deps.readJson<XlegalResult>(resultPath(jobId));
+  let answer = pollAnswerWithoutJob(result);
+  if (answer === "not-found") {
+    const mapping = await deps.readJson<{ jobId?: string }>(tokenMapPath(tokenHash));
+    answer = pollAnswerWithoutJob(result, mapping?.jobId === jobId);
+  }
+  return { answer, result };
 }
 
 /**

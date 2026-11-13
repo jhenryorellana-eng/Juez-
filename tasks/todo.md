@@ -317,6 +317,13 @@ $400/$650 es el modelo de negocio y se queda tal cual.
         queda para el PR de `npm audit` (hay que comprobar sharp en el build de Vercel).
   - [x] `storage-local.test.ts`: el EPERM de Windows al borrar la carpeta temporal se
         reintenta (era el fallo a nivel de archivo que no se reproducía).
+  - [x] `/codex review`, segunda pasada, 2 [P2] del fallback de la redacción:
+        - si no se pudo redactar ni borrar el resultado, `GET /run` sin job pregunta igual
+          a x-legal cuando el mapeo del token apunta a ese `jobId` (`pollWithoutJob`);
+        - tras borrar el resultado que no se pudo redactar, se intenta una vez más dejar
+          `{ status, completedAt, webhookDelivered }`: es lo que impide que un reintento de
+          `POST /jobs` con ese `jobId` genere otra vez. Si tampoco se puede, queda en el log
+          (x-legal descarta el webhook repetido por `{jobId}:completed`).
   - [ ] `CRON_SECRET` en Vercel (Production) — paso manual, antes del merge.
   - [ ] Tras el merge: en el log del primer cron de Production
         (`[xlegal:purge] cron: scanned …`) confirmar `failed 0` y `redaction failed 0`:
