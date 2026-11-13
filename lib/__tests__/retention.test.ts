@@ -115,6 +115,18 @@ describe("sweepEnabledHere", () => {
 
   it("is on in production and locally", () => {
     assert.equal(sweepEnabledHere({ VERCEL_ENV: "production" }), true);
+    assert.equal(sweepEnabledHere({ VERCEL_ENV: "production", BLOB_READ_WRITE_TOKEN: "t" }), true);
     assert.equal(sweepEnabledHere({}), true);
+  });
+
+  it("is off on a local machine that holds the Blob token: there is only one store, production's", () => {
+    assert.equal(sweepEnabledHere({ BLOB_READ_WRITE_TOKEN: "t" }), false);
+  });
+
+  it("is off in any environment that is not production (allow list, not deny list)", () => {
+    // `vercel env pull` writes VERCEL_ENV=development into .env.local.
+    assert.equal(sweepEnabledHere({ VERCEL_ENV: "development" }), false);
+    assert.equal(sweepEnabledHere({ VERCEL_ENV: "development", BLOB_READ_WRITE_TOKEN: "t" }), false);
+    assert.equal(sweepEnabledHere({ VERCEL_ENV: "staging" }), false);
   });
 });

@@ -15,8 +15,8 @@
  * a delete is retried by the next request instead of waiting 24 h. Two sweeps
  * racing are harmless — deleting is idempotent.
  *
- * Never runs from a Vercel preview (sweepEnabledHere): previews share
- * production's Blob store.
+ * Runs only in production, or locally without the Blob token
+ * (sweepEnabledHere): every holder of the token reaches production's store.
  */
 import { storageDeleteMany, storageList, type StoredObject } from "./storage";
 import {
@@ -157,6 +157,13 @@ export async function purgeExpiredXlegalData(
  * leaves just the reports whose webhook never landed, which stay as they are:
  * /api/xlegal/status still needs them. Never throws: one bad result must not
  * stop the sweep.
+ *
+ * A null read counts as a failure, not as "not a legacy result": list() just
+ * returned this object with more than REDACTED_RESULT_MAX_BYTES, and
+ * storageReadJson answers null on ANY error (list, fetch or JSON). Skipping it
+ * would answer 200 while a delivered report may still be stored. (A result
+ * deleted in between — the redaction fallback — is a rare false alarm, and the
+ * next run clears it.)
  */
 async function redactLegacyDeliveredResults(
   objects: readonly StoredObject[],
@@ -169,6 +176,11 @@ async function redactLegacyDeliveredResults(
     if (!jobId || o.size <= REDACTED_RESULT_MAX_BYTES) continue;
     try {
       const result = await deps.readJson<XlegalResult>(o.pathname);
+      if (result === null) {
+        redactionFailed += 1;
+        console.error(`[xlegal:purge] could not read the result ${jobId}`);
+        continue;
+      }
       if (!isDeliveredFullResult(result)) continue;
       const job = await deps.readJson<Pick<XlegalJob, "tokenHash">>(jobPath(jobId));
       if (await forgetDeliveredJob(jobId, job?.tokenHash, result.completedAt, deps)) redacted += 1;

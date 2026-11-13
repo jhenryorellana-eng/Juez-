@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
 import { storageAvailable } from "@/lib/storage";
 import { purgeExpiredXlegalData } from "@/lib/xlegal-purge";
+import { safeErrorMessage } from "@/lib/safe-error";
 import { sweepEnabledHere } from "@/lib/retention";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 
@@ -22,7 +23,8 @@ export const maxDuration = 300;
  * net in POST /api/xlegal/jobs only runs when x-legal asks for an evaluation,
  * and it is capped.
  *
- * Never from a Vercel preview: previews share production's Blob store.
+ * Only in production (sweepEnabledHere): previews, development and a local
+ * machine holding the Blob token all reach production's store.
  */
 export async function GET(request: Request) {
   const limit = rateLimit(`xlegal-purge:${getClientIp(request)}`, 10);
@@ -57,7 +59,7 @@ export async function GET(request: Request) {
     const incomplete = report.failed > 0 || report.redactionFailed > 0;
     return NextResponse.json(report, { status: incomplete ? 500 : 200 });
   } catch (error) {
-    console.error("[xlegal:purge] cron: sweep failed:", (error as Error).message);
+    console.error("[xlegal:purge] cron: sweep failed:", safeErrorMessage(error));
     return NextResponse.json({ error: "Purge failed." }, { status: 500 });
   }
 }

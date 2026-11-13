@@ -150,6 +150,47 @@ describe("purgeExpiredXlegalData", () => {
     assert.equal(report!.redactionFailed, 1);
   });
 
+  it("cron: a large result it cannot read counts as a failure (storageReadJson answers null on any error)", async () => {
+    store.seed(
+      resultPath(JOB_A),
+      {
+        status: "done",
+        informe: INFORME,
+        pdfUrl: "u",
+        cliente: CLIENT,
+        completedAt: "2026-11-01T10:00:00.000Z",
+        webhookDelivered: true,
+      },
+      FRESH,
+    );
+    const original = store.readJson;
+    store.readJson = async <T>(pathname: string): Promise<T | null> =>
+      pathname === resultPath(JOB_A) ? null : original<T>(pathname);
+    let report;
+    const logs = await captureLogs(async () => {
+      report = await purgeExpiredXlegalData("cron", { now: NOW }, store);
+    });
+    assert.equal(report!.redacted, 0);
+    assert.equal(report!.redactionFailed, 1);
+    assert.match(logs, new RegExp(`could not read the result ${JOB_A}`));
+  });
+
+  it("cron: a small result is not read at all", async () => {
+    store.seed(resultPath(JOB_A), { status: "done", completedAt: "x", webhookDelivered: true }, FRESH);
+    const original = store.readJson;
+    const read: string[] = [];
+    store.readJson = async <T>(pathname: string): Promise<T | null> => {
+      read.push(pathname);
+      return original<T>(pathname);
+    };
+    let report;
+    await captureLogs(async () => {
+      report = await purgeExpiredXlegalData("cron", { now: NOW }, store);
+    });
+    assert.equal(report!.redactionFailed, 0);
+    assert.deepEqual(read, []);
+  });
+
   it("the opportunistic trigger does not read results (no backfill inside an evaluation)", async () => {
     store.seed(
       resultPath(JOB_A),

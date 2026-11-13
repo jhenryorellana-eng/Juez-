@@ -131,13 +131,19 @@ export function resultJobId(pathname: string): string | null {
 export const REDACTED_RESULT_MAX_BYTES = 512;
 
 /**
- * Whether this deployment may run the sweep. Vercel previews use the same Blob
- * store (BLOB_READ_WRITE_TOKEN) as production, so a sweep from a preview — say,
- * a branch with a retention rule still under review — would delete production
- * data. Previews never sweep; locally (no VERCEL_ENV) the store is `.dev-store/`.
+ * Whether this deployment may run the sweep. There is ONE Blob store, and every
+ * holder of BLOB_READ_WRITE_TOKEN reaches it: Vercel previews, and a local
+ * `next dev` with the token in `.env.local`. A sweep from any of them — a branch
+ * with a retention rule still under review, a laptop with its own clock — would
+ * delete production data. So it is an allow list:
+ *  - production (VERCEL_ENV=production);
+ *  - a local machine WITHOUT the token, whose store is `.dev-store/`.
+ * Everything else — preview, development (what `vercel env pull` writes), a
+ * local machine holding the token — never sweeps.
  */
 export function sweepEnabledHere(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
-  return env.VERCEL_ENV !== "preview";
+  if (env.VERCEL_ENV === "production") return true;
+  return !env.VERCEL_ENV && !env.BLOB_READ_WRITE_TOKEN;
 }
