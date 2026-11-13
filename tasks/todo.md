@@ -287,11 +287,38 @@ $400/$650 es el modelo de negocio y se queda tal cual.
   - [x] Lecturas/borrados por pathname exacto; `/api/upload` con lista blanca
         (`casos/`, `xlegal/docs/`).
   - [x] Red de `after()`: tope de 500 borrados, sin leer resultados; marcador solo tras
-        un barrido completo; nunca en previews (`VERCEL_ENV=preview`).
+        un barrido completo; solo en producción (lista blanca, ver segunda revisión).
   - [x] Cron: reduce los resultados entregados antes del 2026-11-12.
   - [x] `GET /run` sin job: 404 si el `jobId` no tiene un resultado entregado o fallido.
   - [x] `FILE_NOT_ACTIVE` sin el nombre del archivo; logs con solo el código.
+  - [x] Endurecimiento incluido a propósito, fuera de la decisión literal de Henry:
+        `/api/upload` solo emite tokens para `casos/` y `xlegal/docs/`, y las lecturas y
+        borrados por pathname buscan el blob exacto. Sin ello cualquiera podía plantar un
+        `xlegal/.purge-marker.json/...` o un resultado falso que la purga lee y borra.
+        Los tres puntos de subida del front usan prefijos permitidos.
+- Segunda revisión (security + code), mismo PR:
+  - [x] Presupuesto que vence durante el webhook: el job espera a `work` (el cierre y el
+        olvido del cliente) en vez de devolver y dejar que Vercel congele la instancia.
+  - [x] `sweepEnabledHere` es lista blanca: `VERCEL_ENV=production`, o local sin
+        `BLOB_READ_WRITE_TOKEN`. Un `next dev` con el token ya no barre producción.
+  - [x] Backfill del cron: un resultado de más de 512 bytes que no se puede leer cuenta
+        como `redactionFailed` (500), no como «no es antiguo».
+  - [x] Logs: `storageDeleteMany` usa `safeBlobErrorMessage` (solo las frases fijas del
+        SDK); la ruta de purga y `GeminiUploads` usan `safeErrorMessage` (movido a
+        `lib/safe-error.ts`); fuera la puntuación del log del job.
+  - [x] `POST /run` solo acepta URLs de Blob bajo `xlegal/docs/`; el cierre del job solo
+        borra bajo `xlegal/docs/` y `xlegal/informes/` (ya no el marcador ni un resultado).
+  - [x] Si no se puede escribir el resultado, el webhook sale igual; si tampoco se entrega,
+        se borran el PDF y los documentos propios.
+  - [x] `tsx` 4.23.15 (esbuild 0.28.2): fuera GHSA-g7r4-m6w7-qqqr. `ignore-scripts`
+        queda para el PR de `npm audit` (hay que comprobar sharp en el build de Vercel).
+  - [x] `storage-local.test.ts`: el EPERM de Windows al borrar la carpeta temporal se
+        reintenta (era el fallo a nivel de archivo que no se reproducía).
   - [ ] `CRON_SECRET` en Vercel (Production) — paso manual, antes del merge.
+  - [ ] Tras el merge: en el log del primer cron de Production
+        (`[xlegal:purge] cron: scanned …`) confirmar `failed 0` y `redaction failed 0`:
+        `list()` paginado, `del()` por lotes, `uploadedAt` y `files.delete` de Gemini solo
+        se probaron con dobles o disco local.
   - [ ] Aparte: `npm audit` (next ≥ 16.4.1, undici, sharp…), Blob privado para
         `xlegal/`, Blob y `XLEGAL_*` propios para Preview.
 

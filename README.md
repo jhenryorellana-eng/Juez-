@@ -156,7 +156,13 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
 - `GET /api/xlegal/run` sin job: un `jobId` que no tiene resultado (o cuyo resultado aún no
   se entregó) responde `404` sin preguntar a x-legal.
 - Si el presupuesto cierra el job mientras se genera, el PDF tardío no se guarda (y si ya
-  se estaba subiendo, se borra).
+  se estaba subiendo, se borra). Si vence cuando el informe ya estaba listo (durante el
+  webhook), el job espera a que termine el cierre y se olvide al cliente.
+- Si no se puede escribir el resultado completo, el webhook se envía igual (lleva el
+  `pdfUrl`). Si además el webhook falla, nada puede reconciliar ese informe: se borran el
+  PDF y nuestras copias de los documentos.
+- El cierre del job solo borra blobs propios bajo `xlegal/docs/` y `xlegal/informes/`, y
+  `POST /api/xlegal/run` solo acepta documentos subidos a `xlegal/docs/`.
 - **A los 30 días**, todo lo que haya bajo `xlegal/` (jobs, results, tokens, docs, informes)
   se borra, según la fecha de subida del blob (`uploadedAt`; en local, el `mtime`). Reglas
   en `lib/retention.ts`, barrido en `lib/xlegal-purge.ts`.
@@ -172,8 +178,10 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   - El marcador `xlegal/.purge-marker.json` (que el barrido no borra) se escribe solo tras
     un barrido completo: si se cortó, llegó al tope o falló un borrado, la siguiente
     petición lo reintenta.
-  - **Nunca desde un preview de Vercel** (`VERCEL_ENV=preview`): los previews comparten el
-    Blob de producción.
+  - **Solo en producción** (`VERCEL_ENV=production`), o en local **sin**
+    `BLOB_READ_WRITE_TOKEN` (`.dev-store/`). Es una lista blanca: un preview, `development`
+    o un `next dev` con el token del Blob en `.env.local` llegan al mismo Blob de
+    producción y nunca barren.
   - Primera ejecución tras el deploy, sin esperar al cron de las 08:00 UTC, desde una
     shell donde la variable no se imprima:
     `curl -H "Authorization: Bearer $CRON_SECRET" https://<dominio-de-juez>/api/xlegal/purge`.
@@ -209,7 +217,8 @@ npm run dev
 - Solo se aceptan URLs de blob del dominio `*.blob.vercel-storage.com`, y el navegador
   solo puede subir a `casos/` y `xlegal/docs/`.
 - Los logs de `/xlegal` llevan el código de error, no el mensaje: un `CODIGO:detalle`
-  suele llevar el nombre del documento.
+  suele llevar el nombre del documento. Ni la puntuación del informe ni el mensaje de un
+  error de Blob que pueda citar una URL (`safeBlobErrorMessage`) llegan al log.
 - El iframe solo se permite desde `contygo.app` y, mientras dure su alias de
   migración, desde `x-legal.usalatinoprime.com` (ver `next.config.mjs`).
 
