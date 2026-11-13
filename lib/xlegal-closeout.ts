@@ -171,7 +171,10 @@ export async function deliverReport(
  * If the redaction cannot be written (twice), the full result is DELETED rather
  * than left behind: x-legal already has the report and nobody asks for this
  * jobId after a 2xx — and a result with `webhookDelivered: false` would be
- * served by /status as if it had never been delivered.
+ * served by /status as if it had never been delivered. The token mapping is
+ * then KEPT: with no result left it is what ties this jobId to the token, so a
+ * page still polling GET /api/xlegal/run finds its report (pollAnswerWithoutJob).
+ * It holds only `{ jobId }`; the 30-day sweep removes it.
  *
  * Each step stands on its own: one failing must not keep the others from
  * running, and the 30-day sweep is the net for whatever survives.
@@ -224,7 +227,7 @@ export async function forgetDeliveredJob(
 
   // Even when the report could not be removed, the job record still goes:
   // less client data left behind is better than none removed.
-  if (tokenHash) await forgetTokenMapping(jobId, tokenHash, deps);
+  if (tokenHash && redacted) await forgetTokenMapping(jobId, tokenHash, deps);
   await forgetJobRecord(jobId, deps);
   console.log(
     `[xlegal:job] ${jobId} ${reportGone ? "delivered data forgotten" : "job forgotten, REPORT STILL STORED"}`,
@@ -329,13 +332,16 @@ export async function closeFailedJob(
  * result decides instead:
  *  - an error result → the error code (all that is kept of a failed job);
  *  - a delivered result → ask x-legal for this token's download link;
+ *  - no result, but the token's own mapping points at this jobId (a delivery
+ *    whose redaction failed and whose result was deleted) → ask x-legal too;
  *  - anything else (an unknown jobId, a report not delivered yet) → 404, which
  *    the page treats as "keep polling". A made-up id never reaches x-legal.
  */
 export function pollAnswerWithoutJob(
   result: XlegalResult | null,
+  tokenMappingPointsHere = false,
 ): "error" | "ask-xlegal" | "not-found" {
-  if (!result) return "not-found";
+  if (!result) return tokenMappingPointsHere ? "ask-xlegal" : "not-found";
   if (result.status === "error") return "error";
   if (result.webhookDelivered === true) return "ask-xlegal";
   return "not-found";

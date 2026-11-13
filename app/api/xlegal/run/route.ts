@@ -77,13 +77,20 @@ export async function GET(request: Request) {
  *    against the token any more, but nothing leaks: the answer is only this
  *    token's own download link, which the page already hands to whoever holds
  *    the token;
+ *  - no result, but this token's own mapping points at the jobId (a delivery
+ *    whose redaction failed, so the result was deleted) → ask x-legal as well;
  *  - anything else (an unknown jobId included) → 404, which the client treats
  *    as "keep polling". A made-up jobId never reaches x-legal.
  */
 async function answerWithoutJob(id: string, token: string) {
   const notFound = () => NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
   const result = await storageReadJson<XlegalResult>(resultPath(id));
-  const answer = pollAnswerWithoutJob(result);
+  // Only without a result: the token's mapping is what still binds this jobId
+  // to the token once the delivered result had to be deleted.
+  const mapping = result
+    ? null
+    : await storageReadJson<{ jobId?: string }>(tokenMapPath(hashToken(token)));
+  const answer = pollAnswerWithoutJob(result, mapping?.jobId === id);
   if (answer === "error" && result?.status === "error") {
     return NextResponse.json({ status: "error", error: result.error });
   }

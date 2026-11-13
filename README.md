@@ -142,7 +142,9 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   —sin score, nivel, headline, nombre, correo, país ni documentos— y se borran
   `xlegal/jobs/<jobId>.json` y su `xlegal/tokens/<tokenHash>.json`. `/api/xlegal/status`
   responde entonces `done` sin `result`; `GET /api/xlegal/run` pide el enlace del PDF a x-legal.
-  Si la reescritura falla dos veces, el resultado completo se **borra** en vez de quedarse.
+  Si la reescritura falla dos veces, el resultado completo se **borra** en vez de quedarse,
+  y el mapeo del token (`{ jobId }`) se deja para que la página que sigue sondeando
+  encuentre su informe en x-legal.
   La lógica vive en `lib/xlegal-closeout.ts` (con tests en `lib/__tests__/`).
 - **Si el webhook no llega**, el resultado completo y el PDF se quedan: son la red de
   reconciliación de `/api/xlegal/status`.

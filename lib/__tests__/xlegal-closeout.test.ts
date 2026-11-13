@@ -99,6 +99,19 @@ describe("forgetDeliveredJob", () => {
     assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
   });
 
+  it("keeps the token mapping when the result had to be deleted instead of redacted", async () => {
+    // With no result left, the mapping ({ jobId }, no client data) is what still
+    // ties this jobId to the token, so a page that is polling can find its report.
+    store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
+    store.failPut = (pathname) => pathname === resultPath(JOB_ID);
+    await captureLogs(() =>
+      forgetDeliveredJob(JOB_ID, TOKEN_HASH, "2026-11-12T08:00:00.000Z", store),
+    );
+    assert.equal(store.has(resultPath(JOB_ID)), false);
+    assert.equal(store.has(jobPath(JOB_ID)), false);
+    assert.deepEqual(store.json(tokenMapPath(TOKEN_HASH)), { jobId: JOB_ID });
+  });
+
   it("reports a full result it could neither redact nor delete, instead of claiming it is gone", async () => {
     store.seed(resultPath(JOB_ID), { status: "done", informe: INFORME, cliente: CLIENT });
     store.failPut = (pathname) => pathname === resultPath(JOB_ID);
@@ -224,8 +237,13 @@ describe("pollAnswerWithoutJob", () => {
     );
   });
 
+  it("asks x-legal when there is no result but the token's mapping points at this jobId", () => {
+    assert.equal(pollAnswerWithoutJob(null, true), "ask-xlegal");
+  });
+
   it("is not found for an unknown jobId or a result not delivered yet", () => {
     assert.equal(pollAnswerWithoutJob(null), "not-found");
+    assert.equal(pollAnswerWithoutJob(null, false), "not-found");
     assert.equal(
       pollAnswerWithoutJob({
         status: "done",
