@@ -12,6 +12,7 @@ import {
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
 import { runPurgeIfDue } from "@/lib/xlegal-purge";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { safeErrorMessage } from "@/lib/safe-error";
 import { ACCEPTED_EXTENSIONS, MAX_FILES } from "@/lib/analysis";
 import type { ClienteInfo, XlegalJob, XlegalResult } from "@/lib/types";
 
@@ -43,8 +44,10 @@ const str = (v: unknown, max: number): string => (typeof v === "string" ? v.trim
  * - Auth: header `x-api-key` = XLEGAL_API_KEY (the shared secret /status uses).
  * - Idempotent by `jobId`: a retry of the same job answers 202 without starting
  *   a second generation (x-legal's queue retries on network errors).
- * - Documents are read through short-lived signed Supabase URLs, never copied
- *   into our storage, and never deleted from here (they are not ours).
+ * - Documents are read through short-lived signed Supabase URLs — the only
+ *   URLs accepted (isAllowedJobDocumentUrl: our own Blob is refused) — never
+ *   copied into our storage, and never deleted from here (they are not ours:
+ *   the close-out skips the documents of a `source: "api"` job).
  */
 export async function POST(request: Request) {
   const requestStartedAt = Date.now();
@@ -137,7 +140,7 @@ export async function POST(request: Request) {
   try {
     await storagePut(jobPath(jobId), JSON.stringify(job), "application/json");
   } catch (error) {
-    console.error(`[xlegal:jobs] ${jobId} could not be stored:`, (error as Error).message);
+    console.error(`[xlegal:jobs] ${jobId} could not be stored:`, safeErrorMessage(error));
     return NextResponse.json({ error: "Could not start the job." }, { status: 500 });
   }
 

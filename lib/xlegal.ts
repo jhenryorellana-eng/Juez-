@@ -11,14 +11,38 @@
  * `x-juez-signature`, secret `XLEGAL_WEBHOOK_SECRET`.
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { safeErrorMessage } from "./safe-error";
 import { storageReadJson } from "./storage";
 import type { XlegalJob, XlegalResult, XlegalSession } from "./types";
 
 /** Opaque bearer token issued by x-legal (never logged, never stored in clear). */
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,128}$/;
 
-/** Webhook retry waits (ms): initial try + 3 retries = 4 sends total. */
-const WEBHOOK_BACKOFF_MS = [0, 2_000, 8_000, 30_000];
+/**
+ * Webhook retry waits (ms): first send + 2 retries = 3 sends. Until 2026-11-14
+ * it was 4 sends (2 s / 8 s / 30 s) with no timeout per send, so a hung x-legal
+ * could hold the close-out past the platform's limit — and on the budget's path
+ * only CLOSEOUT_RESERVE_MS (60 s) is left. The send that went is the one after
+ * the 30 s wait: a webhook that fails three times is what /api/xlegal/status
+ * reconciles.
+ */
+export const WEBHOOK_BACKOFF_MS: readonly number[] = [0, 2_000, 8_000];
+
+/**
+ * Each send gives up after this long. x-legal answers `evaluation.completed`
+ * only once it has downloaded and stored our PDF (a report, not a scan), and
+ * `evaluation.failed` right away.
+ */
+export const WEBHOOK_ATTEMPT_TIMEOUT_MS = 12_000;
+
+/**
+ * The longest a delivery can take: every wait, and every send timing out —
+ * 10 s + 3 × 12 s = 46 s. It has to fit in CLOSEOUT_RESERVE_MS (lib/xlegal-job.ts)
+ * with room left for the close-out's Blob writes and deletes (a test holds it).
+ */
+export const WEBHOOK_WORST_CASE_MS =
+  WEBHOOK_BACKOFF_MS.reduce((total, wait) => total + wait, 0) +
+  WEBHOOK_BACKOFF_MS.length * WEBHOOK_ATTEMPT_TIMEOUT_MS;
 
 export function xlegalConfigured(): boolean {
   return Boolean(
@@ -46,11 +70,18 @@ export function apiKeyMatches(candidate: string): boolean {
 }
 
 /**
- * The document URLs POST /api/xlegal/jobs accepts: HTTPS, and either our own
- * Vercel Blob or a SIGNED object URL of a Supabase project
- * (`/storage/v1/object/sign/...`). The signed path matters: a public-bucket URL
- * or any other Supabase endpoint is refused, so the key cannot be used to make
- * this app fetch arbitrary resources.
+ * The document URLs POST /api/xlegal/jobs accepts: a SIGNED object URL of a
+ * Supabase project, over HTTPS (`https://<ref>.supabase.co/storage/v1/object/sign/...`),
+ * which is what x-legal sends (its dispatch-evaluation job signs each case
+ * document for 10 minutes). The signed path matters: a public-bucket URL or any
+ * other Supabase endpoint is refused, so the key cannot be used to make this app
+ * fetch arbitrary resources.
+ *
+ * Our own Vercel Blob is refused too (since 2026-11-14; x-legal never sent one).
+ * A job lists its documents, and a URL of ours — another job's PDF under
+ * `xlegal/informes/`, its documents, `casos/` — would be read and sent to
+ * Gemini on the caller's say-so (and, before the close-out learned to leave an
+ * api job's documents alone, deleted).
  */
 export function isAllowedJobDocumentUrl(raw: string): boolean {
   let url: URL;
@@ -59,9 +90,11 @@ export function isAllowedJobDocumentUrl(raw: string): boolean {
   } catch {
     return false;
   }
-  if (url.protocol !== "https:") return false;
-  if (url.hostname.endsWith(".blob.vercel-storage.com")) return true;
-  return url.hostname.endsWith(".supabase.co") && url.pathname.startsWith("/storage/v1/object/sign/");
+  return (
+    url.protocol === "https:" &&
+    url.hostname.endsWith(".supabase.co") &&
+    url.pathname.startsWith("/storage/v1/object/sign/")
+  );
 }
 
 function apiUrl(): string {
@@ -113,7 +146,7 @@ export async function fetchXlegalSession(
     };
     return { status: res.status, session };
   } catch (error) {
-    console.error("[xlegal] session lookup failed:", (error as Error).message);
+    console.error("[xlegal] session lookup failed:", safeErrorMessage(error));
     return { status: 0, session: null };
   }
 }
@@ -141,7 +174,7 @@ export async function consumeXlegalAttempt(
     );
     return { ok: res.ok, status: res.status };
   } catch (error) {
-    console.error("[xlegal] consume failed:", (error as Error).message);
+    console.error("[xlegal] consume failed:", safeErrorMessage(error));
     return { ok: false, status: 0 };
   }
 }
@@ -155,20 +188,31 @@ export interface XlegalWebhookPayload {
   error?: string;
 }
 
+/** Overrides of the delivery schedule (tests). */
+export interface WebhookSchedule {
+  backoffMs?: readonly number[];
+  attemptTimeoutMs?: number;
+}
+
 /**
  * POST /api/webhooks/juez on x-legal, signed with HMAC-SHA256 over the exact
- * raw body sent. Retries with 2 s / 8 s / 30 s backoff (4 sends total).
+ * raw body sent. Retries with 2 s / 8 s backoff (3 sends total), and each send
+ * gives up after WEBHOOK_ATTEMPT_TIMEOUT_MS: at worst WEBHOOK_WORST_CASE_MS.
  * Returns true only when x-legal answered 2xx.
  */
 export async function deliverXlegalWebhook(
   payload: XlegalWebhookPayload,
+  {
+    backoffMs = WEBHOOK_BACKOFF_MS,
+    attemptTimeoutMs = WEBHOOK_ATTEMPT_TIMEOUT_MS,
+  }: WebhookSchedule = {},
 ): Promise<boolean> {
   const raw = JSON.stringify(payload);
   const signature = createHmac("sha256", process.env.XLEGAL_WEBHOOK_SECRET ?? "")
     .update(raw, "utf8")
     .digest("hex");
 
-  for (const wait of WEBHOOK_BACKOFF_MS) {
+  for (const wait of backoffMs) {
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     try {
       const res = await fetch(`${apiUrl()}/api/webhooks/juez`, {
@@ -179,15 +223,17 @@ export async function deliverXlegalWebhook(
         },
         body: raw,
         cache: "no-store",
+        signal: AbortSignal.timeout(attemptTimeoutMs),
       });
       if (res.ok) return true;
       console.error(
         `[xlegal] webhook ${payload.event} rejected (${res.status}), job ${payload.jobId}`,
       );
     } catch (error) {
+      // A send that timed out logs as TimeoutError; a network failure, as its kind.
       console.error(
-        `[xlegal] webhook ${payload.event} network error, job ${payload.jobId}:`,
-        (error as Error).message,
+        `[xlegal] webhook ${payload.event} not delivered, job ${payload.jobId}:`,
+        safeErrorMessage(error),
       );
     }
   }
