@@ -79,11 +79,17 @@ premium) · @vercel/blob · Stripe Checkout (vía REST, sin SDK).
 
 ## Puesta en marcha (local)
 ```bash
-npm install
+npm ci                               # sin install scripts (.npmrc: ignore-scripts=true)
 cp .env.local.example .env.local     # completa las variables (ver abajo)
 npm run dev                          # http://localhost:3000
 npm test                             # node:test + tsx (lib/__tests__)
 ```
+
+`.npmrc` lleva `ignore-scripts=true`: ningún `npm install`/`npm ci` ejecuta los install
+scripts de las dependencias (ni en local ni en Vercel). Los binarios nativos llegan como
+`optionalDependencies` del lock: sharp por `@img/sharp-*` y esbuild (de `tsx`) por
+`@esbuild/*`. Si un paquete nuevo falla al cargar su binario, lee su script y, solo si hace
+falta, `npm rebuild <paquete> --ignore-scripts=false`.
 
 ## Variables de entorno
 | Variable | Obligatoria | Para qué |
@@ -146,6 +152,9 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   y el mapeo del token (`{ jobId }`) se deja para que la página que sigue sondeando
   encuentre su informe en x-legal.
   La lógica vive en `lib/xlegal-closeout.ts` (con tests en `lib/__tests__/`).
+- **En cuanto existe el informe**, nuestras copias de los documentos (`xlegal/docs/`) se
+  borran, antes del webhook y pase lo que pase con él: la reconciliación sirve el resultado y
+  el PDF, nunca los documentos.
 - **Si el webhook no llega**, el resultado completo y el PDF se quedan: son la red de
   reconciliación de `/api/xlegal/status`.
 - **Un job fallido** cuyo `evaluation.failed` x-legal aceptó conserva solo
@@ -160,10 +169,12 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   se estaba subiendo, se borra). Si vence cuando el informe ya estaba listo (durante el
   webhook), el job espera a que termine el cierre y se olvide al cliente.
 - Si no se puede escribir el resultado completo, el webhook se envía igual (lleva el
-  `pdfUrl`). Si además el webhook falla, nada puede reconciliar ese informe: se borran el
-  PDF y nuestras copias de los documentos.
+  `pdfUrl`). Si además el webhook falla, nada puede reconciliar ese informe: se borra
+  también el PDF (salvo que el resultado sí se haya escrito: entonces se queda con él).
 - El cierre del job solo borra blobs propios bajo `xlegal/docs/` y `xlegal/informes/`, y
-  `POST /api/xlegal/run` solo acepta documentos subidos a `xlegal/docs/`.
+  `POST /api/xlegal/run` solo acepta documentos subidos a `xlegal/docs/`. Un borrado que
+  falla queda en el log como un número («could not delete N of M»), nunca como URL; lo
+  retira la purga de 30 días.
 - **A los 30 días**, todo lo que haya bajo `xlegal/` (jobs, results, tokens, docs, informes)
   se borra, según la fecha de subida del blob (`uploadedAt`; en local, el `mtime`). Reglas
   en `lib/retention.ts`, barrido en `lib/xlegal-purge.ts`.
@@ -215,11 +226,18 @@ npm run dev
   anti-reuso de sesiones.
 - Rate-limit en memoria por IP (evaluate 6/min, checkout 5/min, pro-run 10/min). Para
   límites compartidos entre instancias serverless, usar Upstash Redis / Vercel KV.
-- Solo se aceptan URLs de blob del dominio `*.blob.vercel-storage.com`, y el navegador
-  solo puede subir a `casos/` y `xlegal/docs/`.
+- El navegador solo puede subir a `casos/` y `xlegal/docs/` (`/api/upload`), y cada flujo
+  solo acepta los suyos: `/api/evaluate` y `/api/checkout` (JSON), URLs de Blob bajo
+  `casos/` (`isDemoUploadedDocUrl`); `POST /api/xlegal/run`, bajo `xlegal/docs/`
+  (`isXlegalUploadedDocUrl`). Los dos primeros borran al terminar los archivos que se les
+  dieron: sin esa regla, su `del()` final podía borrar cualquier blob de `xlegal/`.
 - Los logs de `/xlegal` llevan el código de error, no el mensaje: un `CODIGO:detalle`
-  suele llevar el nombre del documento. Ni la puntuación del informe ni el mensaje de un
-  error de Blob que pueda citar una URL (`safeBlobErrorMessage`) llegan al log.
+  suele llevar el nombre del documento. Un mensaje sin código no se registra (ni
+  truncado): solo el tipo del error, y el estado HTTP si es un `ApiError` de Gemini
+  (`lib/safe-error.ts`). Una respuesta del modelo que no es JSON válido se convierte en
+  `MODEL_JSON_INVALID`, sin su texto (el `SyntaxError` lo citaba). Ni la puntuación del
+  informe ni el mensaje de un error de Blob que pueda citar una URL (`safeBlobErrorMessage`)
+  llegan al log.
 - El iframe solo se permite desde `contygo.app` y, mientras dure su alias de
   migración, desde `x-legal.usalatinoprime.com` (ver `next.config.mjs`).
 

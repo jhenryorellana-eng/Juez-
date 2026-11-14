@@ -335,6 +335,23 @@ $400/$650 es el modelo de negocio y se queda tal cual.
         se probaron con dobles o disco local.
   - [ ] Aparte: `npm audit` (next ≥ 16.4.1, undici, sharp…), Blob privado para
         `xlegal/`, Blob y `XLEGAL_*` propios para Preview.
+- Tercera revisión (bajos de security + code, con APPROVE de ambos), mismo PR:
+  - [x] Nuestras copias de los documentos (`xlegal/docs/`) se borran en cuanto existe el
+        informe, antes del webhook y pase lo que pase con él (también cuando el resultado
+        se escribió pese al error); el PDF, solo donde ya se borraba.
+  - [x] `MODEL_JSON_INVALID`: una respuesta del modelo que no es JSON ya no sale como un
+        `SyntaxError` que cita el texto. Código conocido de `errorCode`.
+  - [x] `safeErrorMessage`: un mensaje sin código ya no se registra truncado; solo el tipo
+        del error (y el estado HTTP de un `ApiError` de `@google/genai`).
+  - [x] `.npmrc` con `ignore-scripts=true`: `npm ci && npm test && npm run build` en local y
+        la preview de Vercel; sharp y esbuild salen de sus `optionalDependencies`.
+  - [x] `/api/evaluate` y `/api/checkout` (JSON) solo aceptan URLs de Blob bajo `casos/`
+        (`isDemoUploadedDocUrl`): su `del()` final ya no puede tocar `xlegal/`.
+  - [x] El cierre del job borra con `storageDeleteMany` y registra cuántos borrados fallaron
+        (un número, nunca la URL). `storageDelete` no cambia para `/api/pro/run`.
+  - [x] El marcador de la purga que no se puede escribir ya no tumba un barrido completo:
+        queda en el log y el reporte se devuelve igual.
+  - [ ] Seguimiento, fuera de este PR: `xlegal/` en un Blob privado.
 
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
