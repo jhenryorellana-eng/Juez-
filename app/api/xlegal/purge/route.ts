@@ -10,14 +10,18 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+/** CRON_SECRET must be at least this long, in UTF-8 bytes. */
+const MIN_CRON_SECRET_BYTES = 32;
+
 /**
  * GET /api/xlegal/purge — the daily retention sweep of `xlegal/`
  * (policy: lib/retention.ts · sweep: lib/xlegal-purge.ts).
  *
  * Called by the Vercel cron declared in vercel.json. When the project has a
  * CRON_SECRET variable, Vercel sends it as `Authorization: Bearer <CRON_SECRET>`.
- * Without that variable this route refuses to run (503): an unauthenticated
- * "delete things" endpoint is worse than a sweep that waits for its secret.
+ * Without that variable — or with one shorter than 32 bytes — this route
+ * refuses to run (503): an unauthenticated "delete things" endpoint is worse
+ * than a sweep that waits for its secret.
  * CRON_SECRET is REQUIRED in production: this is the real sweep (no cap, plus
  * the redaction of delivered results written before 2026-11-12). The after()
  * net in POST /api/xlegal/jobs only runs when x-legal asks for an evaluation,
@@ -39,6 +43,15 @@ export async function GET(request: Request) {
   if (!secret) {
     console.error(
       "[xlegal:purge] CRON_SECRET is not set: refusing to run. Set it in Vercel → Settings → Environment Variables.",
+    );
+    return NextResponse.json({ error: "Not configured." }, { status: 503 });
+  }
+  // The README asks for at least 32 random bytes; the route holds it. A weak
+  // secret could not destroy anything beyond the policy (only what is past 30
+  // days goes), but it would let anyone trigger sweeps. Its value is never logged.
+  if (Buffer.byteLength(secret, "utf8") < MIN_CRON_SECRET_BYTES) {
+    console.error(
+      `[xlegal:purge] CRON_SECRET is shorter than ${MIN_CRON_SECRET_BYTES} bytes: refusing to run. Replace it in Vercel → Settings → Environment Variables.`,
     );
     return NextResponse.json({ error: "Not configured." }, { status: 503 });
   }
