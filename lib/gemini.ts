@@ -59,10 +59,15 @@ interface GenParams {
  * the evaluation of an identifiable person — and its message reaches the logs
  * (and, for the demo, the fallback's console.error): so it becomes a bare code,
  * with neither the text nor the original error attached.
+ *
+ * A missing or blank answer is invalid too. It used to become `{}`, typed as a
+ * Verdict or an Informe, which then failed later and far from the cause (the
+ * PDF, the webhook's score) — or not at all.
  */
 export function parseModelJson<T>(text: string | undefined): T {
+  if (!text?.trim()) throw new Error("MODEL_JSON_INVALID");
   try {
-    return JSON.parse(text ?? "{}") as T;
+    return JSON.parse(text) as T;
   } catch {
     throw new Error("MODEL_JSON_INVALID");
   }

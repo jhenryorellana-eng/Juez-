@@ -10,8 +10,12 @@ describe("parseModelJson", () => {
     });
   });
 
-  it("treats a missing answer as an empty object, as before", () => {
-    assert.deepEqual(parseModelJson(undefined), {});
+  it("throws MODEL_JSON_INVALID for a missing or blank answer, instead of an empty report", () => {
+    // `{}` typed as a Verdict or an Informe failed later and far from the cause
+    // (the PDF, the webhook's score); a blank answer is an invalid answer.
+    for (const text of [undefined, "", "   ", "\n\t "]) {
+      assert.throws(() => parseModelJson(text), { message: "MODEL_JSON_INVALID" }, JSON.stringify(text));
+    }
   });
 
   it("throws MODEL_JSON_INVALID, with neither the answer nor the parse error attached", () => {
