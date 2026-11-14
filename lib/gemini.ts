@@ -2,6 +2,7 @@ import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
 import type { Schema, ContentListUnion, Part } from "@google/genai";
 import type { Verdict, Informe, ClienteInfo, InformeVariant } from "./types";
 import { GeminiUploads } from "./gemini-uploads";
+import { safeErrorMessage } from "./safe-error";
 import {
   buildEvaluationSystemPrompt,
   buildEvaluationUserPrompt,
@@ -342,7 +343,8 @@ export async function researchCountryCases(pais: string): Promise<CountryResearc
         await sleep(900);
         continue;
       }
-      console.error("[gemini:research] búsqueda fallida:", (err as Error).message);
+      // safeErrorMessage: an ApiError's message may quote the request, which names the country.
+      console.error("[gemini:research] búsqueda fallida:", safeErrorMessage(err));
       return null;
     }
   }

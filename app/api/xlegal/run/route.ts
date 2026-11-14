@@ -16,6 +16,7 @@ import {
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
 import { pollWithoutJob } from "@/lib/xlegal-closeout";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { safeErrorMessage } from "@/lib/safe-error";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 import type { XlegalJob, XlegalResult } from "@/lib/types";
 
@@ -269,9 +270,11 @@ export async function POST(request: Request) {
     after(() => processXlegalJob(jobId, job, token, origin, requestStartedAt));
     return NextResponse.json({ jobId }, { status: 202 });
   } catch (error) {
+    // safeErrorMessage: this catch also covers storing xlegal/docs/<jobId>/<i>-<name>,
+    // and a Blob error built from the server's message may quote that pathname.
     console.error(
       `[xlegal:run] job start failed (${tokenHash.slice(0, 8)}):`,
-      (error as Error).message,
+      safeErrorMessage(error),
     );
     return NextResponse.json(
       { error: "No pudimos iniciar tu evaluación. Inténtalo de nuevo." },
