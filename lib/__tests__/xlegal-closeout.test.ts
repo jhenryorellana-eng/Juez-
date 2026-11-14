@@ -363,6 +363,59 @@ describe("closeFailedJob", () => {
     assert.match(logs, /could not delete 1 of 1 \(documents\)/);
     assert.doesNotMatch(logs, /0-doc\.pdf|blob\.vercel-storage/);
   });
+
+  it("deletes our documents before the error result and the webhook, so a frozen close-out does not leave them behind", async () => {
+    // Same order as deliverReport: the webhook's backoff can outlast the
+    // instance, and nothing reads the documents of a failed job again.
+    let docAtResult: boolean | undefined;
+    let docAtWebhook: boolean | undefined;
+    store.onPut = (pathname) => {
+      if (pathname === resultPath(JOB_ID)) docAtResult = store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`);
+    };
+    const deliver = store.deliver;
+    store.deliver = async (payload) => {
+      docAtWebhook = store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`);
+      return deliver(payload);
+    };
+    await fail();
+
+    assert.equal(docAtResult, false);
+    assert.equal(docAtWebhook, false);
+    assert.equal(store.webhooks[0].event, "evaluation.failed");
+  });
+});
+
+describe('a server-to-server job (source "api")', () => {
+  // Its documents are x-legal's, read through signed URLs: the close-out never
+  // deletes any of them, even a blob of ours that the request named (another
+  // job's PDF, say, which an undelivered result still points at).
+  beforeEach(() => {
+    const othersPdf = store.seed(informePdfPath(OTHER_JOB_ID), "%PDF");
+    const othersDoc = store.seed(`xlegal/docs/${OTHER_JOB_ID}/0-doc.pdf`, "pdf-bytes");
+    job = {
+      ...job,
+      source: "api",
+      files: [
+        { url: FOREIGN_DOC, name: "1.pdf" },
+        { url: othersPdf, name: "a.pdf" },
+        { url: othersDoc, name: "b.pdf" },
+      ],
+    };
+  });
+
+  it("the report deletes none of the documents it lists, only its own PDF once x-legal has it", async () => {
+    await report();
+    assert.equal(store.has(informePdfPath(OTHER_JOB_ID)), true);
+    assert.equal(store.has(`xlegal/docs/${OTHER_JOB_ID}/0-doc.pdf`), true);
+    assert.equal(store.has(informePdfPath(JOB_ID)), false);
+  });
+
+  it("the failure deletes none of the documents it lists", async () => {
+    await closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET" }, store);
+    assert.equal(store.has(informePdfPath(OTHER_JOB_ID)), true);
+    assert.equal(store.has(`xlegal/docs/${OTHER_JOB_ID}/0-doc.pdf`), true);
+    assert.equal(store.webhooks[0].event, "evaluation.failed");
+  });
 });
 
 describe("pollWithoutJob", () => {

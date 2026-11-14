@@ -77,6 +77,18 @@ function ownedUrls(urls: string[]): string[] {
 }
 
 /**
+ * The documents a job's close-out deletes. Only the embedded page's: a
+ * server-to-server job (`source: "api"`, POST /api/xlegal/jobs) reads x-legal's
+ * own documents through signed URLs, and the route promises never to delete
+ * from there — so even a blob of ours that such a request named (another job's
+ * PDF, say) is left alone. Jobs written before `source` existed came from the
+ * page.
+ */
+function documentsToDelete(job: XlegalJob): string[] {
+  return job.source === "api" ? [] : job.files.map((f) => f.url);
+}
+
+/**
  * Deletes our copies among `urls` (ownedUrls) and logs how many could not be
  * deleted — a count, never a URL: a pathname under xlegal/docs/ carries the
  * client's file name. Never throws: the close-out goes on, and the 30-day sweep
@@ -120,8 +132,8 @@ export interface ReportInput {
 }
 
 /**
- * Store the PDF and the result → delete our copies of the documents → webhook →
- * on 2xx, forget the client.
+ * Store the PDF → delete our copies of the documents (documentsToDelete) →
+ * store the result → webhook → on 2xx, forget the client.
  */
 export async function deliverReport(
   { jobId, job, token, origin, state, informe, pdf }: ReportInput,
@@ -150,7 +162,9 @@ export async function deliverReport(
   // serves the result and the PDF, never the documents, and nothing generates
   // from them again. So they go now, before the webhook and its backoff: an
   // instance frozen mid-delivery must not leave them behind for 30 days.
-  await deleteOwnedCopies(jobId, job.files.map((f) => f.url), "documents", deps);
+  // (A retry that reuses this job record, should the instance die before the
+  // result is written, then fails with DOWNLOAD_FAILED: expected.)
+  await deleteOwnedCopies(jobId, documentsToDelete(job), "documents", deps);
 
   // Local-dev storage returns a relative URL; the webhook consumer (x-legal
   // or the mock) needs an absolute one to download the PDF.
@@ -387,8 +401,11 @@ export interface FailureInput {
 }
 
 /**
- * Error result → `evaluation.failed` webhook → delete our copies of the
- * documents. Once x-legal acknowledged the failure, the job record is deleted
+ * Delete our copies of the documents → error result → `evaluation.failed`
+ * webhook. The documents go first, as in deliverReport: nothing reads them once
+ * the job failed (a retry uploads them again), and the webhook's backoff can
+ * outlast the instance — on the budget's path only CLOSEOUT_RESERVE_MS is left.
+ * Once x-legal acknowledged the failure, the job record is deleted
  * too: what is left is `{ status: "error", error }`, which is all the
  * idempotency of /api/xlegal/jobs, /api/xlegal/status and the page's poll need.
  * If the error result could not be written, the record stays: it is then the
@@ -405,6 +422,9 @@ export async function closeFailedJob(
   { jobId, job, token, code }: FailureInput,
   deps: CloseoutDeps = defaultCloseoutDeps,
 ): Promise<void> {
+  // Privacy: client documents never outlive the job, even on failure — nor a
+  // close-out that the platform freezes during the webhook.
+  await deleteOwnedCopies(jobId, documentsToDelete(job), "documents", deps);
   const result: XlegalResult = { status: "error", error: code };
   const stored = await deps
     .put(resultPath(jobId), JSON.stringify(result), "application/json")
@@ -419,8 +439,6 @@ export async function closeFailedJob(
     jobId,
     error: code,
   });
-  // Privacy: client documents never outlive the job, even on failure.
-  await deleteOwnedCopies(jobId, job.files.map((f) => f.url), "documents", deps);
   if (stored && delivered) {
     await forgetJobRecord(jobId, deps);
     console.log(`[xlegal:job] ${jobId} failed job forgotten`);
