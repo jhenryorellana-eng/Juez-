@@ -9,8 +9,8 @@
 import { safeErrorMessage } from "./safe-error";
 import { isXlegalClientFilePathname } from "./storage-paths";
 import {
-  storageDelete,
   storageDeleteAt,
+  storageDeleteMany,
   storagePathname,
   storagePut,
   storageReadJson,
@@ -34,8 +34,11 @@ export interface CloseoutDeps {
   put(pathname: string, data: Buffer | string, contentType: string): Promise<string>;
   readJson<T>(pathname: string): Promise<T | null>;
   deleteAt(pathname: string): Promise<void>;
-  /** Deletes by URL; swallows its own errors (storageDelete). */
-  deleteUrls(urls: string[]): Promise<void>;
+  /**
+   * Deletes by URL and says how many it could NOT delete (storageDeleteMany),
+   * so a copy of the client's files that survives is in the log, not silent.
+   */
+  deleteMany(urls: string[]): Promise<{ deleted: number; failed: number }>;
   /** true only when x-legal answered 2xx. */
   deliver(payload: XlegalWebhookPayload): Promise<boolean>;
 }
@@ -46,7 +49,7 @@ export const defaultCloseoutDeps: CloseoutDeps = {
   put: storagePut,
   readJson: storageReadJson,
   deleteAt: storageDeleteAt,
-  deleteUrls: storageDelete,
+  deleteMany: storageDeleteMany,
   deliver: deliverXlegalWebhook,
 };
 
@@ -73,6 +76,35 @@ function ownedUrls(urls: string[]): string[] {
   });
 }
 
+/**
+ * Deletes our copies among `urls` (ownedUrls) and logs how many could not be
+ * deleted — a count, never a URL: a pathname under xlegal/docs/ carries the
+ * client's file name. Never throws: the close-out goes on, and the 30-day sweep
+ * is the net for whatever survives.
+ */
+async function deleteOwnedCopies(
+  jobId: string,
+  urls: string[],
+  what: "documents" | "PDF",
+  deps: Pick<CloseoutDeps, "deleteMany">,
+): Promise<void> {
+  const owned = ownedUrls(urls);
+  if (owned.length === 0) return;
+  try {
+    const { failed } = await deps.deleteMany(owned);
+    if (failed > 0) {
+      console.error(
+        `[xlegal:job] ${jobId} could not delete ${failed} of ${owned.length} (${what}): left for the 30-day sweep`,
+      );
+    }
+  } catch (error) {
+    console.error(
+      `[xlegal:job] ${jobId} could not delete ${owned.length} (${what}):`,
+      safeErrorMessage(error),
+    );
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Success                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -87,7 +119,10 @@ export interface ReportInput {
   pdf: Buffer;
 }
 
-/** Store the PDF and the result → webhook → on 2xx, forget the client. */
+/**
+ * Store the PDF and the result → delete our copies of the documents → webhook →
+ * on 2xx, forget the client.
+ */
 export async function deliverReport(
   { jobId, job, token, origin, state, informe, pdf }: ReportInput,
   deps: CloseoutDeps = defaultCloseoutDeps,
@@ -103,12 +138,19 @@ export async function deliverReport(
   // on must not bury a report that is genuinely ready. If it fired DURING the
   // upload, the job is already closed as failed: take the PDF back.
   if (state.closed) {
-    await deps.deleteUrls([storedPdfUrl]).catch(() => {});
+    await deleteOwnedCopies(jobId, [storedPdfUrl], "PDF", deps);
     console.log(`[xlegal:job] ${jobId} budget closed the job while the PDF uploaded: PDF deleted`);
     return;
   }
   state.closed = true;
   console.log(`[xlegal:job] ${jobId} pdf stored`);
+
+  // The report exists: our copies of the client's documents have nothing left
+  // to do, whatever the webhook answers. Reconciliation (/api/xlegal/status)
+  // serves the result and the PDF, never the documents, and nothing generates
+  // from them again. So they go now, before the webhook and its backoff: an
+  // instance frozen mid-delivery must not leave them behind for 30 days.
+  await deleteOwnedCopies(jobId, job.files.map((f) => f.url), "documents", deps);
 
   // Local-dev storage returns a relative URL; the webhook consumer (x-legal
   // or the mock) needs an absolute one to download the PDF.
@@ -154,14 +196,12 @@ export async function deliverReport(
   console.log(
     `[xlegal:job] ${jobId} webhook ${delivered ? "delivered" : "FAILED (reconciliation pending)"}`,
   );
-  const ourCopies = ownedUrls([...job.files.map((f) => f.url), storedPdfUrl]);
   if (delivered) {
-    // x-legal stored the PDF: remove our copies (the client docs we hold, if
-    // any, and the temporary PDF).
-    await deps.deleteUrls(ourCopies).catch(() => {});
+    // x-legal stored the PDF: remove our temporary copy.
+    await deleteOwnedCopies(jobId, [storedPdfUrl], "PDF", deps);
     await forgetDeliveredJob(jobId, job.tokenHash, completedAt, deps);
   } else if (!resultStored) {
-    await discardUnreconcilableReport(jobId, ourCopies, deps);
+    await discardUnreconcilableReport(jobId, storedPdfUrl, deps);
   }
   // If every webhook attempt failed but the result is stored, the PDF and the
   // full result stay put: /api/xlegal/status is the reconciliation path and
@@ -172,23 +212,25 @@ export async function deliverReport(
 /**
  * Neither delivered nor stored: /api/xlegal/status has no result to serve, so
  * nothing can reconcile this report — x-legal will give the attempt back
- * (STALE_NO_RESULT). Keep no copy of the documents or the evaluation. The job
- * record stays: it is then the only trace of the job.
+ * (STALE_NO_RESULT). Keep no copy of the evaluation either (our copies of the
+ * documents are already gone: deliverReport deletes them whatever happens). The
+ * job record stays: it is then the only trace of the job.
  *
  * But a put() that threw may still have committed (the response was lost), and
  * a result that /status serves must keep its PDF. So the PDF goes only once no
- * result can point at it: a result that turns out to exist is kept, with
- * everything, for reconciliation; an absent one (or a read that failed, which
- * looks the same) is deleted first; and if that delete fails, the PDF stays.
+ * result can point at it: a result that turns out to exist is kept, with its
+ * PDF, for reconciliation (the documents are gone all the same); an absent one
+ * (or a read that failed, which looks the same) is deleted first; and if that
+ * delete fails, the PDF stays.
  */
 async function discardUnreconcilableReport(
   jobId: string,
-  ourCopies: string[],
+  pdfUrl: string,
   deps: CloseoutDeps,
 ): Promise<void> {
   const existing = await deps.readJson<XlegalResult>(resultPath(jobId)).catch(() => null);
   if (existing) {
-    console.error(`[xlegal:job] ${jobId} the result was stored after all: kept for reconciliation`);
+    console.error(`[xlegal:job] ${jobId} the result was stored after all: it and its PDF kept for reconciliation`);
     return;
   }
   try {
@@ -200,8 +242,8 @@ async function discardUnreconcilableReport(
     );
     return;
   }
-  await deps.deleteUrls(ourCopies).catch(() => {});
-  console.error(`[xlegal:job] ${jobId} result not saved and webhook failed: PDF and documents deleted`);
+  await deleteOwnedCopies(jobId, [pdfUrl], "PDF", deps);
+  console.error(`[xlegal:job] ${jobId} result not saved and webhook failed: PDF deleted`);
 }
 
 /**
@@ -378,7 +420,7 @@ export async function closeFailedJob(
     error: code,
   });
   // Privacy: client documents never outlive the job, even on failure.
-  await deps.deleteUrls(ownedUrls(job.files.map((f) => f.url))).catch(() => {});
+  await deleteOwnedCopies(jobId, job.files.map((f) => f.url), "documents", deps);
   if (stored && delivered) {
     await forgetJobRecord(jobId, deps);
     console.log(`[xlegal:job] ${jobId} failed job forgotten`);

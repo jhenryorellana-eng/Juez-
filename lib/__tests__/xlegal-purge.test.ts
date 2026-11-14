@@ -73,6 +73,21 @@ describe("purgeExpiredXlegalData", () => {
     assert.equal(store.has(PURGE_MARKER_PATH), false);
   });
 
+  it("a marker that cannot be written still returns the report of a complete sweep", async () => {
+    store.seed(`xlegal/jobs/${JOB_A}.json`, {}, OLD());
+    store.failPut = (pathname) => pathname === PURGE_MARKER_PATH;
+    let report;
+    const logs = await captureLogs(async () => {
+      report = await purgeExpiredXlegalData("cron", { now: NOW }, store);
+    });
+    assert.equal(report!.deleted, 1);
+    assert.equal(report!.failed, 0);
+    assert.equal(store.has(`xlegal/jobs/${JOB_A}.json`), false);
+    assert.equal(store.has(PURGE_MARKER_PATH), false);
+    assert.match(logs, /marker could not be written/);
+    assert.doesNotMatch(logs, /sweep failed/);
+  });
+
   it("does not stamp the marker when a delete fails, so the next request retries", async () => {
     const ref = store.seed(`xlegal/jobs/${JOB_A}.json`, {}, OLD());
     store.failDelete.add(ref);

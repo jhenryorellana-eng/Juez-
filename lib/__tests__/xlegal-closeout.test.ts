@@ -7,7 +7,6 @@ import {
   informePdfPath,
   pollAnswerWithoutJob,
   pollWithoutJob,
-  safeErrorMessage,
   type JobState,
 } from "../xlegal-closeout";
 import { jobPath, resultPath, tokenMapPath } from "../xlegal";
@@ -175,7 +174,7 @@ describe("deliverReport", () => {
     assert.equal(store.webhooks[0].result?.score, 72);
   });
 
-  it("webhook failed: keeps the full result, the PDF and the job for reconciliation", async () => {
+  it("webhook failed: deletes our documents, keeps the full result, the PDF and the job for reconciliation", async () => {
     store.webhookOk = () => false;
     await report();
 
@@ -184,6 +183,36 @@ describe("deliverReport", () => {
     assert.ok(result?.informe);
     assert.equal(store.has(informePdfPath(JOB_ID)), true);
     assert.equal(store.has(jobPath(JOB_ID)), true);
+    // Reconciliation serves the result and the PDF, never the documents.
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
+  });
+
+  it("deletes our documents before the webhook, so a frozen delivery does not leave them behind", async () => {
+    let docAtWebhook: boolean | undefined;
+    let pdfAtWebhook: boolean | undefined;
+    const deliver = store.deliver;
+    store.deliver = async (payload) => {
+      docAtWebhook = store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`);
+      pdfAtWebhook = store.has(informePdfPath(JOB_ID));
+      return deliver(payload);
+    };
+    await report();
+    assert.equal(docAtWebhook, false);
+    // The PDF is what the webhook points at: it goes only once x-legal has it.
+    assert.equal(pdfAtWebhook, true);
+    assert.equal(store.has(informePdfPath(JOB_ID)), false);
+  });
+
+  it("logs how many of our copies it could not delete, never their URLs", async () => {
+    store.failDelete.add(ownDoc);
+    store.failDelete.add(store.url(informePdfPath(JOB_ID)));
+    const logs = await captureLogs(() => report());
+
+    assert.match(logs, /could not delete 1 of 1 \(documents\)/);
+    assert.match(logs, /could not delete 1 of 1 \(PDF\)/);
+    assert.doesNotMatch(logs, /0-doc\.pdf|informe-|blob\.vercel-storage/);
+    // The close-out goes on: the client is forgotten all the same.
+    assert.equal(store.has(jobPath(JOB_ID)), false);
   });
 
   it("does not store a PDF when the budget already closed the job", async () => {
@@ -258,6 +287,8 @@ describe("deliverReport", () => {
     assert.equal(store.json<{ webhookDelivered?: boolean }>(resultPath(JOB_ID))?.webhookDelivered, false);
     assert.equal(store.has(informePdfPath(JOB_ID)), true);
     assert.equal(store.has(jobPath(JOB_ID)), true);
+    // The documents go all the same: nothing reconciles from them.
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
   });
 
   it("keeps the PDF when it cannot confirm that no result points at it", async () => {
@@ -268,6 +299,7 @@ describe("deliverReport", () => {
     await captureLogs(() => report());
 
     assert.equal(store.has(informePdfPath(JOB_ID)), true);
+    assert.equal(store.has(`xlegal/docs/${JOB_ID}/0-doc.pdf`), false);
   });
 
   it("only deletes our blobs under xlegal/docs/ or xlegal/informes/, never another path of the store", async () => {
@@ -323,6 +355,13 @@ describe("closeFailedJob", () => {
     store.failPut = (pathname) => pathname === resultPath(JOB_ID);
     await fail();
     assert.equal(store.has(jobPath(JOB_ID)), true);
+  });
+
+  it("logs how many documents it could not delete, never their URLs", async () => {
+    store.failDelete.add(ownDoc);
+    const logs = await captureLogs(() => fail());
+    assert.match(logs, /could not delete 1 of 1 \(documents\)/);
+    assert.doesNotMatch(logs, /0-doc\.pdf|blob\.vercel-storage/);
   });
 });
 
@@ -411,18 +450,5 @@ describe("pollAnswerWithoutJob", () => {
       }),
       "not-found",
     );
-  });
-});
-
-describe("safeErrorMessage", () => {
-  it("keeps only the code of a CODE:detail message, whose detail may be a client's file name", () => {
-    assert.equal(safeErrorMessage(new Error("FILE_NOT_ACTIVE:Pasaporte Cliente.pdf")), "FILE_NOT_ACTIVE");
-    assert.equal(safeErrorMessage(new Error("UNSAFE_PATH:xlegal/docs/a b.pdf")), "UNSAFE_PATH");
-    assert.equal(safeErrorMessage(new Error("TIMEOUT_BUDGET")), "TIMEOUT_BUDGET");
-  });
-
-  it("keeps other messages, truncated", () => {
-    assert.equal(safeErrorMessage(new Error("fetch failed")), "fetch failed");
-    assert.equal(safeErrorMessage("x".repeat(500)).length, 200);
   });
 });

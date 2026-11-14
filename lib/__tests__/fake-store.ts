@@ -26,7 +26,7 @@ export class FakeStore implements CloseoutDeps, PurgeDeps {
   onPut: (pathname: string) => void = () => {};
   /** Return false to make the webhook "fail". */
   webhookOk: (payload: XlegalWebhookPayload) => boolean = () => true;
-  /** Refs that deleteMany must refuse. */
+  /** Refs (URLs) that deleteMany must refuse. */
   failDelete = new Set<string>();
   /** Pathnames that deleteAt must refuse (like storageDeleteAt when del() fails). */
   failDeleteAt = new Set<string>();
@@ -77,15 +77,24 @@ export class FakeStore implements CloseoutDeps, PurgeDeps {
     this.objects.delete(pathname);
   };
 
-  deleteUrls = async (urls: string[]): Promise<void> => {
-    for (const url of urls) {
-      if (url.startsWith(HOST)) this.objects.delete(this.pathnameOf(url));
-    }
-  };
-
   deliver = async (payload: XlegalWebhookPayload): Promise<boolean> => {
     this.webhooks.push(payload);
     return this.webhookOk(payload);
+  };
+
+  /** Deletes by URL; a ref in failDelete counts as failed, like storageDeleteMany. */
+  deleteMany = async (refs: string[]): Promise<{ deleted: number; failed: number }> => {
+    let deleted = 0;
+    let failed = 0;
+    for (const ref of refs) {
+      if (this.failDelete.has(ref)) {
+        failed += 1;
+        continue;
+      }
+      this.objects.delete(this.pathnameOf(ref));
+      deleted += 1;
+    }
+    return { deleted, failed };
   };
 
   // PurgeDeps ----------------------------------------------------------------
@@ -100,20 +109,6 @@ export class FakeStore implements CloseoutDeps, PurgeDeps {
         ref: this.url(pathname),
         size: Buffer.byteLength(entry.data),
       }));
-  };
-
-  deleteMany = async (refs: string[]): Promise<{ deleted: number; failed: number }> => {
-    let deleted = 0;
-    let failed = 0;
-    for (const ref of refs) {
-      if (this.failDelete.has(ref)) {
-        failed += 1;
-        continue;
-      }
-      this.objects.delete(this.pathnameOf(ref));
-      deleted += 1;
-    }
-    return { deleted, failed };
   };
 }
 

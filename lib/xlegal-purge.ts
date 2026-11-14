@@ -18,7 +18,7 @@
  * Runs only in production, or locally without the Blob token
  * (sweepEnabledHere): every holder of the token reaches production's store.
  */
-import { storageDeleteMany, storageList, type StoredObject } from "./storage";
+import { storageList, type StoredObject } from "./storage";
 import {
   MAX_OPPORTUNISTIC_DELETES,
   PURGE_MARKER_PATH,
@@ -50,15 +50,14 @@ interface PurgeMarker {
   trigger: PurgeTrigger;
 }
 
-export interface PurgeDeps extends Pick<CloseoutDeps, "put" | "readJson" | "deleteAt"> {
+export interface PurgeDeps
+  extends Pick<CloseoutDeps, "put" | "readJson" | "deleteAt" | "deleteMany"> {
   list(prefix: string): Promise<StoredObject[]>;
-  deleteMany(refs: string[]): Promise<{ deleted: number; failed: number }>;
 }
 
 export const defaultPurgeDeps: PurgeDeps = {
   ...defaultCloseoutDeps,
   list: storageList,
-  deleteMany: storageDeleteMany,
 };
 
 export interface PurgeOptions {
@@ -122,7 +121,18 @@ export async function purgeExpiredXlegalData(
 
   if (remaining === 0 && failed === 0) {
     const marker: PurgeMarker = { lastRunAt: now.toISOString(), trigger };
-    await deps.put(PURGE_MARKER_PATH, JSON.stringify(marker), "application/json");
+    // The sweep itself is done: a marker that cannot be written only means the
+    // next POST /api/xlegal/jobs sweeps again (idempotent). It must not turn a
+    // complete sweep into "sweep failed" — the cron would answer 500 without its
+    // report, and the net would log it as if nothing had been deleted.
+    try {
+      await deps.put(PURGE_MARKER_PATH, JSON.stringify(marker), "application/json");
+    } catch (error) {
+      console.error(
+        `[xlegal:purge] ${trigger}: sweep done, but the marker could not be written (the next request sweeps again):`,
+        safeErrorMessage(error),
+      );
+    }
   }
 
   const report: PurgeReport = {
