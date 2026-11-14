@@ -97,7 +97,7 @@ falta, `npm rebuild <paquete> --ignore-scripts=false`.
 | `GEMINI_API_KEY` | Sí | Evaluación con IA (sin ella, la app cae a modo demo local) |
 | `BLOB_READ_WRITE_TOKEN` | Para archivos > 3.5 MB y todo el premium | Vercel → Storage → Create → Blob |
 | `STRIPE_SECRET_KEY` | Para cobrar el informe de $50 | dashboard.stripe.com/apikeys |
-| `CRON_SECRET` | **Sí, en Production** (purga diaria de `xlegal/`) | Valor aleatorio de ≥ 32 bytes, tipo *sensitive*, solo en Production: Vercel → Settings → Environment Variables. Vercel lo envía solo al cron. Sin ella el cron recibe `503` todos los días y la retención de 30 días queda en manos de la red de `POST /api/xlegal/jobs`, que solo corre cuando ContyGo pide una evaluación |
+| `CRON_SECRET` | **Sí, en Production** (purga diaria de `xlegal/`) | Valor aleatorio de ≥ 32 bytes, tipo *sensitive*, solo en Production: Vercel → Settings → Environment Variables. Vercel lo envía solo al cron. Sin ella, o con menos de 32 bytes (UTF-8), el cron recibe `503` todos los días y la retención de 30 días queda en manos de la red de `POST /api/xlegal/jobs`, que solo corre cuando ContyGo pide una evaluación |
 
 ## Despliegue en Vercel
 1. En [vercel.com/new](https://vercel.com/new), importa el repositorio.
@@ -116,8 +116,13 @@ Contrato v1 (resumen):
 - `GET {XLEGAL_API_URL}/api/juez/sessions/{token}` — sesión (cliente, intentos, PDF).
 - `POST …/sessions/{token}/consume` — consume el intento (idempotente por `jobId`; 409 sin intentos).
 - `POST {XLEGAL_API_URL}/api/webhooks/juez` — Juez entrega `evaluation.completed|failed`,
-  firmado con HMAC-SHA256 del raw body en `x-juez-signature`. Reintentos 2 s / 8 s / 30 s.
-  Tras el `200`, Juez borra documentos y PDF (x-legal ya lo tiene) y olvida al cliente
+  firmado con HMAC-SHA256 del raw body en `x-juez-signature`. Tres envíos (reintentos a
+  los 2 s y 8 s), y cada uno se corta a los 12 s: en el peor caso, 46 s, que caben en los
+  60 s que el job se reserva para cerrarse (`CLOSEOUT_RESERVE_MS`; un test lo vigila).
+  Hasta el 2026-11-14 eran cuatro (2 s / 8 s / 30 s) sin tope por envío: un x-legal
+  colgado podía alargar el cierre más allá del límite de la plataforma. Si los tres
+  fallan, la red es `/api/xlegal/status`.
+  Tras el `200`, Juez borra el PDF (x-legal ya lo tiene) y olvida al cliente
   (ver *Retención de `xlegal/`*).
 - `GET /api/xlegal/status?jobId=` (en Juez) — reconciliación si el webhook no llegó.
   Protegido con `x-api-key`. **Decisión v1**: la misma `XLEGAL_API_KEY` sirve en ambas
@@ -131,13 +136,19 @@ directamente y ya no hacen falta la sesión ni el `consume` del lado de Juez:
     por `jobId`: repetirla responde `202` sin volver a generar.
   - `token` es el de la evaluación en ContyGo. Solo viaja de vuelta en el webhook, que
     es el mismo de v1.
-  - `files`: de 1 a 10. Cada `url` debe ser HTTPS y, o bien de nuestro Blob, o bien una
-    **URL firmada** de Supabase (`*.supabase.co/storage/v1/object/sign/…`). El `name`
-    tiene que terminar en `.pdf`, `.docx` o `.txt`.
+  - `files`: de 1 a 10. Cada `url` debe ser una **URL firmada** de Supabase por HTTPS
+    (`https://<ref>.supabase.co/storage/v1/object/sign/…`), que es lo que ContyGo envía
+    (firma cada documento del caso por 10 minutos). El `name` tiene que terminar en
+    `.pdf`, `.docx` o `.txt`. Desde el 2026-11-14, una URL de nuestro Blob se rechaza con
+    `400` (antes se aceptaba, aunque ContyGo nunca la usó): un job lista sus documentos, y
+    una URL nuestra —el PDF de otro job en `xlegal/informes/`, sus documentos, `casos/`—
+    se habría leído y enviado a Gemini a petición de quien llamaba.
   - Responde `202 { jobId, status }`. El resultado llega por el webhook firmado y, si
     este falla, por `/api/xlegal/status`.
   - Los documentos se leen de las URLs firmadas: no se copian a nuestro almacenamiento
-    ni se borran desde aquí (no son nuestros). El PDF temporal sí se borra tras el webhook.
+    ni se borran desde aquí (no son nuestros). El cierre de un job con `source: "api"` no
+    borra ninguno de los documentos que lista, aunque alguno fuera un blob nuestro. El PDF
+    temporal sí se borra tras el webhook.
 
 Variables: `XLEGAL_API_URL`, `XLEGAL_API_KEY`, `XLEGAL_WEBHOOK_SECRET` (server-only;
 sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
@@ -155,10 +166,17 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
 - **En cuanto existe el informe**, nuestras copias de los documentos (`xlegal/docs/`) se
   borran, antes del webhook y pase lo que pase con él: la reconciliación sirve el resultado y
   el PDF, nunca los documentos.
+  - Si la instancia muere justo entre ese borrado y la escritura del resultado, el job queda
+    con registro y sin resultado, y sus documentos ya no existen: un reintento que
+    reutilice ese registro falla con **`DOWNLOAD_FAILED`, y es lo esperado**. Es el precio
+    de borrar antes. La página sube los documentos de nuevo en cada envío, y en el flujo
+    servidor a servidor ContyGo los vuelve a firmar.
 - **Si el webhook no llega**, el resultado completo y el PDF se quedan: son la red de
   reconciliación de `/api/xlegal/status`.
-- **Un job fallido** cuyo `evaluation.failed` x-legal aceptó conserva solo
-  `{ status: "error", error }`: se borra el job. El mapeo del token (`{ jobId }`, sin datos
+- **Un job fallido**: primero se borran nuestras copias de los documentos, y después se
+  escriben el resultado de error y el `evaluation.failed`, igual que en la entrega. Así una
+  instancia congelada durante el backoff del webhook no los deja 30 días. Si x-legal acepta
+  el `evaluation.failed`, queda solo `{ status: "error", error }` y se borra el job. El mapeo del token (`{ jobId }`, sin datos
   del cliente) se deja: x-legal devuelve el intento y la página puede estar escribiendo el
   de un reintento en ese momento. La página embebida sigue viendo el error
   (`GET /api/xlegal/run` lo lee del resultado).
@@ -172,7 +190,9 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   `pdfUrl`). Si además el webhook falla, nada puede reconciliar ese informe: se borra
   también el PDF (salvo que el resultado sí se haya escrito: entonces se queda con él).
 - El cierre del job solo borra blobs propios bajo `xlegal/docs/` y `xlegal/informes/`, y
-  `POST /api/xlegal/run` solo acepta documentos subidos a `xlegal/docs/`. Un borrado que
+  nunca los documentos de un job servidor a servidor (`source: "api"`).
+  `POST /api/xlegal/run` solo acepta documentos subidos a `xlegal/docs/`, y
+  `POST /api/xlegal/jobs`, solo URLs firmadas de Supabase. Un borrado que
   falla queda en el log como un número («could not delete N of M»), nunca como URL; lo
   retira la purga de 30 días.
 - **A los 30 días**, todo lo que haya bajo `xlegal/` (jobs, results, tokens, docs, informes)
@@ -180,7 +200,8 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
   en `lib/retention.ts`, barrido en `lib/xlegal-purge.ts`.
   - `GET /api/xlegal/purge`, llamado una vez al día por el cron de `vercel.json`, con
     `Authorization: Bearer <CRON_SECRET>`. **`CRON_SECRET` es obligatoria en Vercel**
-    (Production): sin ella la ruta responde `503`, no borra nada y lo deja en el log. Es
+    (Production): sin ella, o si tiene menos de 32 bytes en UTF-8, la ruta responde `503`,
+    no borra nada y lo deja en el log (sin el valor). Es
     el barrido de verdad: sin tope, y además reduce los resultados entregados **antes** del
     2026-11-12 (que aún llevan el informe) igual que una entrega de hoy.
   - Red sin secreto nuevo: cada `POST /api/xlegal/jobs` autenticado lanza el barrido en
@@ -198,8 +219,12 @@ sin ellas los endpoints responden 501). Stripe no participa en `/xlegal`.
     shell donde la variable no se imprima:
     `curl -H "Authorization: Bearer $CRON_SECRET" https://<dominio-de-juez>/api/xlegal/purge`.
     En los logs: `[xlegal:purge] cron: scanned N, expired M …` con `200`.
-- **Fuera de alcance**: `pro/` (flujo premium propio, el cliente pagó y puede volver a
-  descargar) y el demo.
+- **Fuera de alcance: `casos/` y `pro/` NO entran en el barrido de 30 días**, que solo
+  recorre `xlegal/`. `pro/` es el flujo premium (el cliente pagó y puede volver a
+  descargar). `casos/` tiene los documentos del demo y del premium: `/api/evaluate` y
+  `/api/pro/run` los borran al terminar, pero si el job falla o la función muere antes del
+  `del()`, lo subido se queda **sin límite de retención**. Ya pasaba antes de este cambio.
+  Seguimiento: extender el barrido a una lista de prefijos con el mismo corte.
 - Los PDF grandes que se suben a la Files API de Gemini se borran al terminar cada
   evaluación, en todos los flujos (`lib/gemini-uploads.ts`): la evaluación espera a las
   subidas que siguen en vuelo y a sus borrados antes de terminar.
@@ -231,10 +256,13 @@ npm run dev
   `casos/` (`isDemoUploadedDocUrl`); `POST /api/xlegal/run`, bajo `xlegal/docs/`
   (`isXlegalUploadedDocUrl`). Los dos primeros borran al terminar los archivos que se les
   dieron: sin esa regla, su `del()` final podía borrar cualquier blob de `xlegal/`.
-- Los logs de `/xlegal` llevan el código de error, no el mensaje: un `CODIGO:detalle`
-  suele llevar el nombre del documento. Un mensaje sin código no se registra (ni
-  truncado): solo el tipo del error, y el estado HTTP si es un `ApiError` de Gemini
-  (`lib/safe-error.ts`). Una respuesta del modelo que no es JSON válido se convierte en
+- Los logs de `/xlegal` (sus cuatro rutas, el job, el cierre, la purga y las llamadas a
+  x-legal), los del demo (`/api/evaluate`) y los de Gemini llevan el código de error, no
+  el mensaje: un `CODIGO:detalle` suele llevar el nombre del documento. Un mensaje sin
+  código no se registra (ni truncado): solo el tipo del error, y el estado HTTP si es un
+  `ApiError` de Gemini (`lib/safe-error.ts`). Lo vigila `lib/__tests__/log-hygiene.test.ts`,
+  que falla si alguna llamada a `console.*` de esos archivos usa un `message`. Un envío del
+  webhook que se cortó por tiempo queda como `TimeoutError`. Una respuesta del modelo que no es JSON válido se convierte en
   `MODEL_JSON_INVALID`, sin su texto (el `SyntaxError` lo citaba). Ni la puntuación del
   informe ni el mensaje de un error de Blob que pueda citar una URL (`safeBlobErrorMessage`)
   llegan al log.

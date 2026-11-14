@@ -333,7 +333,9 @@ $400/$650 es el modelo de negocio y se queda tal cual.
         (`[xlegal:purge] cron: scanned …`) confirmar `failed 0` y `redaction failed 0`:
         `list()` paginado, `del()` por lotes, `uploadedAt` y `files.delete` de Gemini solo
         se probaron con dobles o disco local.
-  - [ ] Aparte: `npm audit` (next ≥ 16.4.1, undici, sharp…), Blob privado para
+  - [ ] Aparte: `npm audit` (next ≥ 16.4.5 —la release de seguridad del 2026-11-03 deja
+        atrás 16.4.1—, undici, @xmldom/xmldom, nanoid, sharp y la cadena de
+        @vercel/blob; gate: `npm audit --omit=dev` sin high/critical), Blob privado para
         `xlegal/`, Blob y `XLEGAL_*` propios para Preview.
 - Tercera revisión (bajos de security + code, con APPROVE de ambos), mismo PR:
   - [x] Nuestras copias de los documentos (`xlegal/docs/`) se borran en cuanto existe el
@@ -352,6 +354,33 @@ $400/$650 es el modelo de negocio y se queda tal cual.
   - [x] El marcador de la purga que no se puede escribir ya no tumba un barrido completo:
         queda en el log y el reporte se devuelve igual.
   - [ ] Seguimiento, fuera de este PR: `xlegal/` en un Blob privado.
+- Cuarta revisión (bajos de security + code, con APPROVE de ambos), mismo PR:
+  - [x] `closeFailedJob` borra nuestras copias de los documentos ANTES del resultado de
+        error y del `evaluation.failed`, como `deliverReport`: una instancia congelada
+        durante el backoff ya no los deja 30 días.
+  - [x] Webhook: cada envío se corta a los 12 s (`AbortSignal.timeout`) y son 3 envíos
+        (0 / 2 s / 8 s) en vez de 4 (… / 30 s). Peor caso 10 s + 3 × 12 s = 46 s, que caben
+        en `CLOSEOUT_RESERVE_MS` (60 s) con 14 s para las escrituras y borrados de Blob del
+        cierre; un test falla si deja de caber. Con 4 envíos y 30 s de espera no cabía
+        ningún timeout útil (40 s de esperas + 4 × T ≤ 60 s → T ≤ 5 s, y x-legal descarga
+        el PDF antes de contestar `evaluation.completed`).
+  - [x] Jobs `source: "api"`: el cierre no borra ninguno de sus documentos (son de
+        x-legal), y `POST /api/xlegal/jobs` solo acepta URLs firmadas de Supabase: una de
+        nuestro Blob da `400`. ContyGo solo firma URLs de Supabase (`dispatch-evaluation`,
+        DOC-48), así que el flujo actual no cambia.
+  - [x] Logs: `safeErrorMessage` en vez de `(error as Error).message` en `/api/xlegal/run`,
+        `/api/xlegal/jobs`, `lib/xlegal.ts` (sesión, consume, webhook), `lib/gemini.ts`
+        (búsqueda por país) y `/api/evaluate` (5 llamadas; las de `DOWNLOAD_FAILED:`,
+        `TOO_LARGE:`… dejan solo el código). Lo vigila `lib/__tests__/log-hygiene.test.ts`.
+  - [x] `/api/xlegal/purge`: un `CRON_SECRET` de menos de 32 bytes (UTF-8) da `503`, y el log
+        no lleva el valor.
+  - [x] `parseModelJson`: una respuesta ausente, vacía o en blanco es `MODEL_JSON_INVALID`, no
+        un `{}` tipado como informe.
+  - [x] README: `DOWNLOAD_FAILED` en el reintento de un job sin resultado es lo esperado;
+        `casos/` y `pro/` no entran en el barrido de 30 días.
+  - [x] `.npmrc`: `package-lock.json` trae `@img/sharp-linux-x64` (0.34.5) y
+        `@esbuild/linux-x64` (0.28.2) como `optional`; sin cambios.
+  - [ ] Seguimiento, fuera de este PR: barrido de 30 días para `casos/` (y decidir `pro/`).
 
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
