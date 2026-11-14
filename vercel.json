@@ -3,5 +3,8 @@
   "functions": {
     "app/api/xlegal/run/route.ts": { "memory": 1769 },
     "app/api/pro/run/route.ts": { "memory": 1769 }
-  }
+  },
+  "crons": [
+    { "path": "/api/xlegal/purge", "schedule": "0 8 * * *" }
+  ]
 }

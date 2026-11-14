@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { MAX_FILE_BYTES } from "@/lib/analysis";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { isAllowedUploadPathname } from "@/lib/storage-paths";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,15 +42,21 @@ export async function POST(request: Request) {
     const result = await handleUpload({
       body,
       request,
-      onBeforeGenerateToken: async () => ({
-        allowedContentTypes: [
-          "application/pdf",
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "text/plain",
-        ],
-        maximumSizeInBytes: MAX_FILE_BYTES,
-        addRandomSuffix: true,
-      }),
+      // Tokens only for the folders the browser uploads to: without this, anyone
+      // could write any pathname of the production store (e.g. a fake purge
+      // marker or a file under xlegal/results/<jobId>.json/).
+      onBeforeGenerateToken: async (pathname) => {
+        if (!isAllowedUploadPathname(pathname)) throw new Error("PATHNAME_NOT_ALLOWED");
+        return {
+          allowedContentTypes: [
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain",
+          ],
+          maximumSizeInBytes: MAX_FILE_BYTES,
+          addRandomSuffix: true,
+        };
+      },
       // El procesamiento ocurre en /api/evaluate; aquí no hay nada que hacer.
       onUploadCompleted: async () => {},
     });

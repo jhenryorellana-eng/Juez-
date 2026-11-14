@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
 import type { Schema, ContentListUnion, Part } from "@google/genai";
 import type { Verdict, Informe, ClienteInfo, InformeVariant } from "./types";
+import { GeminiUploads } from "./gemini-uploads";
 import {
   buildEvaluationSystemPrompt,
   buildEvaluationUserPrompt,
@@ -52,6 +53,20 @@ interface GenParams {
   retries?: number;
 }
 
+/**
+ * Parses the model's JSON answer. A SyntaxError would quote the answer itself —
+ * the evaluation of an identifiable person — and its message reaches the logs
+ * (and, for the demo, the fallback's console.error): so it becomes a bare code,
+ * with neither the text nor the original error attached.
+ */
+export function parseModelJson<T>(text: string | undefined): T {
+  try {
+    return JSON.parse(text ?? "{}") as T;
+  } catch {
+    throw new Error("MODEL_JSON_INVALID");
+  }
+}
+
 /** Llama al modelo pidiendo JSON y lo parsea, con reintentos ante errores transitorios. */
 async function generateJson<T>({ model, contents, config, retries = 2 }: GenParams): Promise<T> {
   const client = getClient();
@@ -61,7 +76,7 @@ async function generateJson<T>({ model, contents, config, retries = 2 }: GenPara
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await client.models.generateContent({ model, contents, config });
-      return JSON.parse(response.text ?? "{}") as T;
+      return parseModelJson<T>(response.text);
     } catch (err) {
       lastErr = err;
       if (attempt < retries && isRetryable(err)) {
@@ -118,16 +133,34 @@ export type PreparedDoc =
   | { kind: "pdf"; name: string; buffer: Buffer }
   | { kind: "text"; name: string; text: string };
 
+/**
+ * Deletes one file from the Files API (GeminiUploads logs a failure, never
+ * throws it, and aborts the request after DELETE_TIMEOUT_MS).
+ */
+async function deleteGeminiFile(name: string, signal: AbortSignal): Promise<void> {
+  const client = getClient();
+  if (!client) return;
+  await client.files.delete({ name, config: { abortSignal: signal } });
+}
+
 /** Sube un PDF grande a la Files API de Gemini y espera a que esté ACTIVO. */
-async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
+async function uploadPdfToGemini(
+  name: string,
+  buffer: Buffer,
+  uploads: GeminiUploads,
+): Promise<Part> {
   const client = getClient();
   if (!client) throw new Error("NO_API_KEY");
 
   const blob = new Blob([new Uint8Array(buffer)], { type: "application/pdf" });
-  let file = await client.files.upload({
-    file: blob,
-    config: { mimeType: "application/pdf", displayName: name },
-  });
+  // Tracked from the moment the upload returns, before waiting for ACTIVE: a
+  // file that never activates still exists on Google's side and must go too.
+  let file = await uploads.upload(() =>
+    client.files.upload({
+      file: blob,
+      config: { mimeType: "application/pdf", displayName: name },
+    }),
+  );
 
   const deadline = Date.now() + 150_000;
   while (file.state === FileState.PROCESSING && Date.now() < deadline) {
@@ -135,13 +168,15 @@ async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
     file = await client.files.get({ name: file.name ?? "" });
   }
   if (file.state !== FileState.ACTIVE || !file.uri) {
-    throw new Error(`FILE_NOT_ACTIVE:${name}`);
+    // Code only: the document's name usually carries the client's, and the
+    // message ends up in the logs (lib/xlegal-job.ts).
+    throw new Error("FILE_NOT_ACTIVE");
   }
   return { fileData: { fileUri: file.uri, mimeType: "application/pdf" } };
 }
 
 /** Convierte los documentos en partes del mensaje (inline, Files API o texto). */
-async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
+async function buildParts(docs: PreparedDoc[], uploads: GeminiUploads): Promise<Part[]> {
   // Paso 1 — decidir qué viaja inline. El presupuesto de 14 MB se reparte en
   // orden de documento, así que esta decisión tiene que seguir siendo secuencial.
   let inlineBudget = INLINE_TOTAL_LIMIT;
@@ -171,18 +206,35 @@ async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
           },
         ];
       }
-      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer)];
+      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer, uploads)];
     }),
   );
   return parts.flat();
 }
 
 /**
+ * Runs one evaluation and deletes whatever it uploaded to the Files API, however
+ * it ends — success, model error, or a failed upload.
+ */
+async function withGeminiUploads<T>(run: (uploads: GeminiUploads) => Promise<T>): Promise<T> {
+  const uploads = new GeminiUploads(deleteGeminiFile);
+  try {
+    return await run(uploads);
+  } finally {
+    await uploads.release();
+  }
+}
+
+/**
  * Evalúa el caso a partir de 1-10 documentos.
  * Usa gemini-3.5-flash; si está sobrecargado, cae a gemini-3.1-flash-lite.
  */
-export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
-  const parts = await buildParts(docs);
+export function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
+  return withGeminiUploads((uploads) => runEvaluation(docs, uploads));
+}
+
+async function runEvaluation(docs: PreparedDoc[], uploads: GeminiUploads): Promise<Verdict> {
+  const parts = await buildParts(docs, uploads);
   const contents: ContentListUnion = [
     ...parts,
     { text: buildEvaluationUserPrompt(docs.length) },
@@ -424,12 +476,21 @@ function buildInformeSchema(variant: InformeVariant): Schema {
  * mantiene en LOW porque MEDIUM costaba minutos por documento y un expediente
  * voluminoso agotaba el presupuesto entero sin llegar a producir nada.
  */
-export async function generateInforme(
+export function generateInforme(
   docs: PreparedDoc[],
   cliente: ClienteInfo,
   variant: InformeVariant = "pro",
 ): Promise<Informe> {
-  const parts = await buildParts(docs);
+  return withGeminiUploads((uploads) => runInforme(docs, cliente, variant, uploads));
+}
+
+async function runInforme(
+  docs: PreparedDoc[],
+  cliente: ClienteInfo,
+  variant: InformeVariant,
+  uploads: GeminiUploads,
+): Promise<Informe> {
+  const parts = await buildParts(docs, uploads);
   const contents: ContentListUnion = [
     ...parts,
     { text: buildEvaluationUserPrompt(docs.length) },

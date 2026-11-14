@@ -5,9 +5,25 @@
  *   para probar el flujo completo sin servicios externos. Las URLs locales se
  *   sirven mediante GET /api/dev/file?path=… (solo en desarrollo).
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
-import { put, del, list } from "@vercel/blob";
+import {
+  put,
+  del,
+  list,
+  BlobAccessError,
+  BlobClientTokenExpiredError,
+  BlobError,
+  BlobNotFoundError,
+  BlobPreconditionFailedError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobServiceRateLimited,
+  BlobStoreNotFoundError,
+  BlobStoreSuspendedError,
+  BlobUnknownError,
+} from "@vercel/blob";
+import { blobUrlPathname, exactBlob } from "./storage-paths";
 
 const DEV_ROUTE = "/api/dev/file?path=";
 const BASE_DIR = path.join(process.cwd(), ".dev-store");
@@ -90,13 +106,28 @@ export async function storageRead(url: string): Promise<Buffer | null> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+/**
+ * list() matches by prefix, so the exact pathname is looked for among the first
+ * page of matches (lib/storage-paths.ts → exactBlob). Since /api/upload only
+ * hands out tokens for `casos/` and `xlegal/docs/`, nobody but this server can
+ * write under the prefixes read this way; the page size is the margin left for
+ * whatever got there before that rule existed.
+ */
+const EXACT_LOOKUP_PAGE = 100;
+
+/** The blob stored under exactly `pathname`, or undefined. */
+async function findExactBlob(pathname: string) {
+  const { blobs } = await list({ prefix: assertSafe(pathname), limit: EXACT_LOOKUP_PAGE });
+  return exactBlob(blobs, pathname);
+}
+
 /** Lee y parsea un JSON guardado bajo un pathname interno. */
 export async function storageReadJson<T>(pathname: string): Promise<T | null> {
   try {
     if (blobEnabled()) {
-      const { blobs } = await list({ prefix: assertSafe(pathname), limit: 1 });
-      if (blobs.length === 0) return null;
-      const res = await fetch(blobs[0].url, { cache: "no-store" });
+      const blob = await findExactBlob(pathname);
+      if (!blob) return null;
+      const res = await fetch(blob.url, { cache: "no-store" });
       if (!res.ok) return null;
       return (await res.json()) as T;
     }
@@ -108,17 +139,20 @@ export async function storageReadJson<T>(pathname: string): Promise<T | null> {
 }
 
 /**
- * ¿Es una URL de NUESTRO almacenamiento (Vercel Blob o el disco local de dev)?
- * Un job servidor-a-servidor lee los documentos de x-legal con URLs firmadas de
- * Supabase: esos archivos no son nuestros y no se borran desde aquí.
+ * El pathname interno de una URL de NUESTRO almacenamiento (Vercel Blob o el
+ * disco local de dev), o null si no es nuestra. Un job servidor-a-servidor lee
+ * los documentos de x-legal con URLs firmadas de Supabase: esos archivos no son
+ * nuestros y no se borran desde aquí.
  */
-export function isOwnedStorageUrl(url: string): boolean {
-  if (isLocalUrl(url)) return true;
-  try {
-    return new URL(url).hostname.endsWith(".blob.vercel-storage.com");
-  } catch {
-    return false;
+export function storagePathname(url: string): string | null {
+  if (isLocalUrl(url)) {
+    try {
+      return pathFromLocalUrl(url);
+    } catch {
+      return null;
+    }
   }
+  return blobUrlPathname(url);
 }
 
 /** Borra archivos por URL (mezcla libre de URLs de Blob y locales). */
@@ -133,12 +167,160 @@ export async function storageDelete(urls: string[]): Promise<void> {
   }
 }
 
-/** Borra un archivo por su pathname interno. */
+/**
+ * Borra un archivo por su pathname interno. Que ya no exista cuenta como
+ * borrado; cualquier otro fallo se LANZA, para que quien llama no dé por
+ * borrado algo que sigue ahí (los que no lo necesitan ya hacen `.catch`).
+ */
 export async function storageDeleteAt(pathname: string): Promise<void> {
   if (blobEnabled()) {
-    const { blobs } = await list({ prefix: assertSafe(pathname), limit: 1 });
-    if (blobs.length > 0) await del(blobs[0].url).catch(() => {});
+    const blob = await findExactBlob(pathname);
+    if (blob) await del(blob.url);
     return;
   }
-  await fs.unlink(localFilePath(pathname)).catch(() => {});
+  await fs.unlink(localFilePath(pathname)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+}
+
+/** An object in the store, as Vercel Blob's list() or the local disk describe it. */
+export interface StoredObject {
+  pathname: string;
+  /** Last write: Blob's `uploadedAt`, or the file's mtime in local mode. */
+  uploadedAt: Date;
+  /** What storageDeleteMany takes: the blob URL, or the local URL in dev. */
+  ref: string;
+  /** Bytes. */
+  size: number;
+}
+
+/** Blob's list() returns at most 1000 per page. */
+const LIST_PAGE = 1000;
+
+/**
+ * Every object whose pathname starts with `prefix`, following list()'s cursor
+ * to the last page. Locally it walks `.dev-store/` from the prefix's folder.
+ */
+export async function storageList(prefix: string): Promise<StoredObject[]> {
+  assertSafe(prefix);
+  if (blobEnabled()) {
+    const objects: StoredObject[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await list({ prefix, cursor, limit: LIST_PAGE });
+      for (const blob of page.blobs) {
+        objects.push({
+          pathname: blob.pathname,
+          uploadedAt: new Date(blob.uploadedAt),
+          ref: blob.url,
+          size: blob.size,
+        });
+      }
+      cursor = page.hasMore ? page.cursor : undefined;
+    } while (cursor);
+    return objects;
+  }
+  return listLocal(prefix);
+}
+
+async function listLocal(prefix: string): Promise<StoredObject[]> {
+  const folder = prefix.slice(0, prefix.lastIndexOf("/") + 1);
+  const objects: StoredObject[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return; // a folder that does not exist simply holds nothing
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const pathname = path.relative(BASE_DIR, full).split(path.sep).join("/");
+      if (!pathname.startsWith(prefix)) continue;
+      const { mtime, size } = await fs.stat(full);
+      objects.push({ pathname, uploadedAt: mtime, ref: localUrl(pathname), size });
+    }
+  }
+
+  await walk(path.join(BASE_DIR, folder));
+  return objects;
+}
+
+/** URLs per del() request, so one huge sweep is not one huge request. */
+const DELETE_BATCH = 100;
+
+/** Blob errors whose message is a fixed sentence of the SDK: safe to log as is. */
+const FIXED_MESSAGE_BLOB_ERRORS = [
+  BlobAccessError,
+  BlobClientTokenExpiredError,
+  BlobNotFoundError,
+  BlobPreconditionFailedError,
+  BlobRequestAbortedError,
+  BlobServiceNotAvailable,
+  BlobServiceRateLimited,
+  BlobStoreNotFoundError,
+  BlobStoreSuspendedError,
+  BlobUnknownError,
+];
+
+/**
+ * What may be logged of a failed Blob call that handled client files. The SDK
+ * builds some errors from the server's own message (`new BlobError(message)`),
+ * and nothing guarantees that message never quotes a URL or a pathname — which,
+ * under xlegal/docs/, carries the client's file name. So only the SDK's fixed
+ * sentences survive; of anything else, just its kind.
+ */
+export function safeBlobErrorMessage(error: unknown): string {
+  if (FIXED_MESSAGE_BLOB_ERRORS.some((kind) => error instanceof kind)) {
+    return (error as Error).message;
+  }
+  if (error instanceof BlobError) return "BlobError (message omitted)";
+  return error instanceof Error ? error.name : typeof error;
+}
+
+/**
+ * Deletes objects by `ref` (as storageList returns them). Unlike storageDelete,
+ * it reports what it could NOT delete instead of swallowing it: a retention
+ * sweep that fails in silence is exactly the failure it exists to prevent.
+ */
+export async function storageDeleteMany(
+  refs: string[],
+  /** Vercel Blob's del(); injectable for tests. */
+  remove: (urls: string[]) => Promise<void> = del,
+): Promise<{ deleted: number; failed: number }> {
+  let deleted = 0;
+  let failed = 0;
+
+  for (const url of refs.filter(isLocalUrl)) {
+    try {
+      await fs.unlink(localFilePath(pathFromLocalUrl(url)));
+      deleted += 1;
+    } catch (error) {
+      // Already gone is as good as deleted.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") deleted += 1;
+      else failed += 1;
+    }
+  }
+
+  const remotes = refs.filter((u) => !isLocalUrl(u));
+  for (let i = 0; i < remotes.length; i += DELETE_BATCH) {
+    const batch = remotes.slice(i, i + DELETE_BATCH);
+    try {
+      await remove(batch);
+      deleted += batch.length;
+    } catch (error) {
+      failed += batch.length;
+      console.error(
+        `[storage] could not delete a batch of ${batch.length}:`,
+        safeBlobErrorMessage(error),
+      );
+    }
+  }
+  return { deleted, failed };
 }

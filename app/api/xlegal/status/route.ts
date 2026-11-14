@@ -14,6 +14,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * Protected with the shared XLEGAL_API_KEY (v1 decision: one secret in both
  * directions), compared in constant time. If the webhook never landed, x-legal
  * polls here and pulls the result (including the still-undeleted pdfUrl).
+ * Results are swept 30 days after their last write (lib/retention.ts); a
+ * jobId swept by then answers 202 "pending", as one never seen would.
  */
 export async function GET(request: Request) {
   const limit = rateLimit(`xlegal-status:${getClientIp(request)}`, 30);
@@ -41,6 +43,16 @@ export async function GET(request: Request) {
 
   if (result.status === "error") {
     return NextResponse.json({ status: "error", error: result.error });
+  }
+  if (!("informe" in result)) {
+    // Delivered: x-legal acknowledged the webhook and holds the report, so the
+    // evaluation is no longer kept here (lib/xlegal-closeout.ts → forgetDeliveredJob).
+    // x-legal's reconciler only acts on a `done` that carries `result`.
+    return NextResponse.json({
+      status: "done",
+      completedAt: result.completedAt,
+      webhookDelivered: true,
+    });
   }
   return NextResponse.json({
     status: "done",

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createCheckoutSession, stripeConfigured } from "@/lib/stripe";
 import { storageAvailable, storagePut } from "@/lib/storage";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { isDemoUploadedDocUrl } from "@/lib/storage-paths";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 import type { ClienteInfo, ProJob } from "@/lib/types";
 
@@ -121,7 +122,7 @@ export async function POST(request: Request) {
   }
 }
 
-/** Camino JSON: los archivos ya están en Vercel Blob; validamos las refs. */
+/** Camino JSON: los archivos ya están en Vercel Blob (bajo casos/); validamos las refs. */
 async function parseJsonBody(request: Request): Promise<{
   fields: CheckoutFields;
   files: Array<{ url: string; name: string }>;
@@ -135,14 +136,11 @@ async function parseJsonBody(request: Request): Promise<{
   const files = (body.files ?? []).filter(
     (f) => typeof f?.url === "string" && typeof f?.name === "string",
   );
+  // Only what the browser uploaded to casos/: /api/pro/run deletes the job's
+  // files when the report is done, so any other blob of the store (xlegal/, a
+  // result, pro/) is not the caller's to name.
   for (const f of files) {
-    let host: string;
-    try {
-      host = new URL(f.url).hostname;
-    } catch {
-      throw new Error("VALIDATION:URL de archivo inválida.");
-    }
-    if (!host.endsWith(".blob.vercel-storage.com")) {
+    if (!isDemoUploadedDocUrl(f.url)) {
       throw new Error("VALIDATION:URL de archivo no permitida.");
     }
   }

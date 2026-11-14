@@ -260,6 +260,99 @@ $400/$650 es el modelo de negocio y se queda tal cual.
 - El iframe (`/xlegal`, `/run`, `frame-ancestors`) queda en su sitio hasta que
       ContyGo despliegue el flujo nuevo; se retira en un cambio aparte.
 
+## v10 — Retención de `xlegal/`: se olvida al cliente al entregar y se purga a los 30 días (2026-11-12)
+- Decisión del dueño (opción C + 30 días). Antes, tras entregar, Juez guardaba para
+      siempre (Blob `public`) el resultado completo con nombre, correo, país, lista de
+      documentos y evaluación, más el job y el mapeo del token.
+- Al recibir `2xx` del webhook: `results/<jobId>.json` → `{ status, completedAt,
+      webhookDelivered: true }`; se borran `jobs/<jobId>.json` y el `tokens/<hash>.json` que
+      apunte a ese job (`forgetDeliveredJob`, `lib/xlegal-job.ts`). `/status` responde `done`
+      sin `result` (el reconciliador de x-legal solo actúa con `result`); `GET /run` sin job
+      pregunta a x-legal por el enlace del PDF; la UI muestra la descarga sin score.
+- Purga diaria de todo `xlegal/` con más de 30 días (`lib/retention.ts`, puro;
+      `lib/xlegal-purge.ts`): cron de Vercel → `GET /api/xlegal/purge` con `CRON_SECRET`
+      (sin él, `503`), y red en `POST /api/xlegal/jobs` vía `after()` una vez cada 24 h.
+- Files API de Gemini: los PDF subidos se borran en un `finally` (`GeminiUploads`).
+- Fuera de alcance: `pro/`.
+- Tras la revisión (security + code), mismo PR:
+  - [x] Tests: `npm test` (node:test + tsx) — retención, cierre del job, barrido, Files
+        API y rutas del almacén (`lib/__tests__/`).
+  - [x] El cierre del job sale a `lib/xlegal-closeout.ts` con I/O inyectable.
+  - [x] Redacción: un reintento; si vuelve a fallar se borra el resultado completo.
+  - [x] Job fallido entregado: se borra el job (el mapeo no, por la carrera con un
+        reintento); queda `{ status, error }`.
+  - [x] `storageDeleteAt` lanza si `del()` falla (salvo «ya no existe»): el fallback de la
+        redacción y el backfill del cron ya no dan por borrado lo que sigue ahí.
+  - [x] PDF tardío tras cerrar el presupuesto: no se guarda o se borra.
+  - [x] Lecturas/borrados por pathname exacto; `/api/upload` con lista blanca
+        (`casos/`, `xlegal/docs/`).
+  - [x] Red de `after()`: tope de 500 borrados, sin leer resultados; marcador solo tras
+        un barrido completo; solo en producción (lista blanca, ver segunda revisión).
+  - [x] Cron: reduce los resultados entregados antes del 2026-11-12.
+  - [x] `GET /run` sin job: 404 si el `jobId` no tiene un resultado entregado o fallido.
+  - [x] `FILE_NOT_ACTIVE` sin el nombre del archivo; logs con solo el código.
+  - [x] Endurecimiento incluido a propósito, fuera de la decisión literal de Henry:
+        `/api/upload` solo emite tokens para `casos/` y `xlegal/docs/`, y las lecturas y
+        borrados por pathname buscan el blob exacto. Sin ello cualquiera podía plantar un
+        `xlegal/.purge-marker.json/...` o un resultado falso que la purga lee y borra.
+        Los tres puntos de subida del front usan prefijos permitidos.
+- Segunda revisión (security + code), mismo PR:
+  - [x] Presupuesto que vence durante el webhook: el job espera a `work` (el cierre y el
+        olvido del cliente) en vez de devolver y dejar que Vercel congele la instancia.
+  - [x] `sweepEnabledHere` es lista blanca: `VERCEL_ENV=production`, o local sin
+        `BLOB_READ_WRITE_TOKEN`. Un `next dev` con el token ya no barre producción.
+  - [x] Backfill del cron: un resultado de más de 512 bytes que no se puede leer cuenta
+        como `redactionFailed` (500), no como «no es antiguo».
+  - [x] Logs: `storageDeleteMany` usa `safeBlobErrorMessage` (solo las frases fijas del
+        SDK); la ruta de purga y `GeminiUploads` usan `safeErrorMessage` (movido a
+        `lib/safe-error.ts`); fuera la puntuación del log del job.
+  - [x] `POST /run` solo acepta URLs de Blob bajo `xlegal/docs/`; el cierre del job solo
+        borra bajo `xlegal/docs/` y `xlegal/informes/` (ya no el marcador ni un resultado).
+  - [x] Si no se puede escribir el resultado, el webhook sale igual; si tampoco se entrega,
+        se borran el PDF y los documentos propios, pero solo cuando ningún resultado puede
+        apuntar al PDF (`/codex review` [P2]: un `put` que falla puede haber escrito igual):
+        si el resultado existe se conserva todo; si no, se borra primero el resultado y, si
+        ese borrado falla, el PDF se queda.
+  - [x] `tsx` 4.23.15 (esbuild 0.28.2): fuera GHSA-g7r4-m6w7-qqqr. `ignore-scripts`
+        queda para el PR de `npm audit` (hay que comprobar sharp en el build de Vercel).
+  - [x] `storage-local.test.ts`: el EPERM de Windows al borrar la carpeta temporal se
+        reintenta (era el fallo a nivel de archivo que no se reproducía).
+  - [x] `/codex review`, segunda pasada, 2 [P2] del fallback de la redacción:
+        - si no se pudo redactar ni borrar el resultado, `GET /run` sin job pregunta igual
+          a x-legal cuando el mapeo del token apunta a ese `jobId` (`pollWithoutJob`);
+        - tras borrar el resultado que no se pudo redactar, se intenta una vez más dejar
+          `{ status, completedAt, webhookDelivered }`: es lo que impide que un reintento de
+          `POST /jobs` con ese `jobId` genere otra vez. Si tampoco se puede, queda en el log
+          (x-legal descarta el webhook repetido por `{jobId}:completed`).
+  - [x] `/codex review`, tercera pasada, 1 [P2]: cada `files.delete` de Gemini se corta a los
+        5 s (`DELETE_TIMEOUT_MS`, con `abortSignal`): `release()` corre antes de devolver un
+        informe ya generado, y un borrado colgado podía agotar el presupuesto y convertirlo en
+        `TIMEOUT_BUDGET`.
+  - [ ] `CRON_SECRET` en Vercel (Production) — paso manual, antes del merge.
+  - [ ] Tras el merge: en el log del primer cron de Production
+        (`[xlegal:purge] cron: scanned …`) confirmar `failed 0` y `redaction failed 0`:
+        `list()` paginado, `del()` por lotes, `uploadedAt` y `files.delete` de Gemini solo
+        se probaron con dobles o disco local.
+  - [ ] Aparte: `npm audit` (next ≥ 16.4.1, undici, sharp…), Blob privado para
+        `xlegal/`, Blob y `XLEGAL_*` propios para Preview.
+- Tercera revisión (bajos de security + code, con APPROVE de ambos), mismo PR:
+  - [x] Nuestras copias de los documentos (`xlegal/docs/`) se borran en cuanto existe el
+        informe, antes del webhook y pase lo que pase con él (también cuando el resultado
+        se escribió pese al error); el PDF, solo donde ya se borraba.
+  - [x] `MODEL_JSON_INVALID`: una respuesta del modelo que no es JSON ya no sale como un
+        `SyntaxError` que cita el texto. Código conocido de `errorCode`.
+  - [x] `safeErrorMessage`: un mensaje sin código ya no se registra truncado; solo el tipo
+        del error (y el estado HTTP de un `ApiError` de `@google/genai`).
+  - [x] `.npmrc` con `ignore-scripts=true`: `npm ci && npm test && npm run build` en local y
+        la preview de Vercel; sharp y esbuild salen de sus `optionalDependencies`.
+  - [x] `/api/evaluate` y `/api/checkout` (JSON) solo aceptan URLs de Blob bajo `casos/`
+        (`isDemoUploadedDocUrl`): su `del()` final ya no puede tocar `xlegal/`.
+  - [x] El cierre del job borra con `storageDeleteMany` y registra cuántos borrados fallaron
+        (un número, nunca la URL). `storageDelete` no cambia para `/api/pro/run`.
+  - [x] El marcador de la purga que no se puede escribir ya no tumba un barrido completo:
+        queda en el log y el reporte se devuelve igual.
+  - [ ] Seguimiento, fuera de este PR: `xlegal/` en un Blob privado.
+
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
 análisis profundo + genera el "Informe de Evaluación y Propuesta de Reforzamiento"

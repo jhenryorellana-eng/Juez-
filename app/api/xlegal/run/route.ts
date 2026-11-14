@@ -1,5 +1,6 @@
 import { NextResponse, after } from "next/server";
 import { storagePut, storageReadJson, storageAvailable } from "@/lib/storage";
+import { isXlegalUploadedDocUrl } from "@/lib/storage-paths";
 import type { FileRef } from "@/lib/informe-pipeline";
 import {
   xlegalConfigured,
@@ -13,6 +14,7 @@ import {
   tokenMapPath,
 } from "@/lib/xlegal";
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
+import { pollWithoutJob } from "@/lib/xlegal-closeout";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
 import type { XlegalJob, XlegalResult } from "@/lib/types";
@@ -44,7 +46,8 @@ export async function GET(request: Request) {
 
   // The poll is authenticated: the token hash must match the one on the job.
   const job = await storageReadJson<XlegalJob>(jobPath(id));
-  if (!job || job.tokenHash !== hashToken(token)) {
+  if (!job) return answerWithoutJob(id, token);
+  if (job.tokenHash !== hashToken(token)) {
     return NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
   }
 
@@ -53,6 +56,8 @@ export async function GET(request: Request) {
 
   // Once the webhook landed, our temporary PDF is deleted: swap in the fresh
   // signed download URL from x-legal so the client never gets a dead link.
+  // A delivered result no longer carries the report (lib/xlegal-closeout.ts), so
+  // the client shows the download without the score.
   if (result.status === "done" && result.webhookDelivered) {
     const { session } = await fetchXlegalSession(token);
     if (session?.pdf.available && session.pdf.downloadUrl) {
@@ -60,6 +65,42 @@ export async function GET(request: Request) {
     }
   }
   return NextResponse.json(result);
+}
+
+/**
+ * The job record is gone. Since 2026-11-12 that is what a closed job looks
+ * like: once x-legal acknowledges the webhook (report or failure), the record
+ * (name, email, documents) is deleted — possibly while this client is still
+ * polling. The result decides (lib/xlegal-closeout.ts → pollWithoutJob):
+ *  - a failed job → its error code, the only thing kept of it;
+ *  - a delivered report → x-legal is the source of truth, so ask it: if this
+ *    token's report is there, the job is done. The jobId cannot be checked
+ *    against the token any more, but nothing leaks: the answer is only this
+ *    token's own download link, which the page already hands to whoever holds
+ *    the token;
+ *  - otherwise, if this token's own mapping points at the jobId (a delivery
+ *    whose redaction failed: the result was deleted, or still says
+ *    `webhookDelivered: false` because not even that worked) → ask x-legal too;
+ *  - anything else (an unknown jobId included) → 404, which the client treats
+ *    as "keep polling". A made-up jobId never reaches x-legal.
+ */
+async function answerWithoutJob(id: string, token: string) {
+  const notFound = () => NextResponse.json({ error: "Trabajo no encontrado." }, { status: 404 });
+  const { answer, result } = await pollWithoutJob(id, hashToken(token));
+  if (answer === "error" && result?.status === "error") {
+    return NextResponse.json({ status: "error", error: result.error });
+  }
+  if (answer !== "ask-xlegal") return notFound();
+
+  const { session } = await fetchXlegalSession(token);
+  if (session?.pdf.available && session.pdf.downloadUrl) {
+    return NextResponse.json({
+      status: "done",
+      webhookDelivered: true,
+      pdfUrl: session.pdf.downloadUrl,
+    });
+  }
+  return notFound();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -100,14 +141,11 @@ export async function POST(request: Request) {
       files = (body.files ?? []).filter(
         (f) => typeof f?.url === "string" && typeof f?.name === "string",
       );
+      // Only what the page uploaded to xlegal/docs/: the job reads these, sends
+      // them to Gemini and, when it closes, deletes them. Any other blob of the
+      // store (a result, the purge marker, casos/) is not the caller's to name.
       for (const f of files) {
-        let host: string;
-        try {
-          host = new URL(f.url).hostname;
-        } catch {
-          return NextResponse.json({ error: "URL de archivo inválida." }, { status: 400 });
-        }
-        if (!host.endsWith(".blob.vercel-storage.com")) {
+        if (!isXlegalUploadedDocUrl(f.url)) {
           return NextResponse.json({ error: "URL de archivo no permitida." }, { status: 400 });
         }
       }
