@@ -83,6 +83,31 @@ describe("processXlegalJob", () => {
     assert.equal(store.webhooks[0].error, "TIMEOUT_BUDGET");
   });
 
+  it("reports a model answer that is not JSON as MODEL_JSON_INVALID, not GENERATION_FAILED", async () => {
+    await captureLogs(() =>
+      run({
+        generate: async () => {
+          throw new Error("MODEL_JSON_INVALID");
+        },
+      }),
+    );
+    assert.equal(store.webhooks[0].event, "evaluation.failed");
+    assert.equal(store.webhooks[0].error, "MODEL_JSON_INVALID");
+    assert.deepEqual(store.json(resultPath(JOB_ID)), { status: "error", error: "MODEL_JSON_INVALID" });
+  });
+
+  it("logs the kind of an uncoded error, never its message", async () => {
+    // What JSON.parse threw before MODEL_JSON_INVALID: its message quotes the answer.
+    const logs = await captureLogs(() =>
+      run({
+        generate: async () => JSON.parse('{"headline": "Cliente Demo E2E, Honduras'),
+      }),
+    );
+    assert.equal(store.webhooks[0].error, "GENERATION_FAILED");
+    assert.match(logs, /GENERATION_FAILED — SyntaxError/);
+    assert.doesNotMatch(logs, /Cliente Demo|Honduras|headline/);
+  });
+
   it("logs no score and no client data", async () => {
     const logs = await captureLogs(() => run());
     assert.doesNotMatch(logs, /score|\b72\b/);

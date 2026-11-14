@@ -66,6 +66,7 @@ function errorCode(error: unknown): string {
     "UNSUPPORTED",
     "EMPTY",
     "NO_API_KEY",
+    "MODEL_JSON_INVALID",
   ];
   return known.find((code) => message.startsWith(code)) ?? "GENERATION_FAILED";
 }

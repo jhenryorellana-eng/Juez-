@@ -53,6 +53,20 @@ interface GenParams {
   retries?: number;
 }
 
+/**
+ * Parses the model's JSON answer. A SyntaxError would quote the answer itself —
+ * the evaluation of an identifiable person — and its message reaches the logs
+ * (and, for the demo, the fallback's console.error): so it becomes a bare code,
+ * with neither the text nor the original error attached.
+ */
+export function parseModelJson<T>(text: string | undefined): T {
+  try {
+    return JSON.parse(text ?? "{}") as T;
+  } catch {
+    throw new Error("MODEL_JSON_INVALID");
+  }
+}
+
 /** Llama al modelo pidiendo JSON y lo parsea, con reintentos ante errores transitorios. */
 async function generateJson<T>({ model, contents, config, retries = 2 }: GenParams): Promise<T> {
   const client = getClient();
@@ -62,7 +76,7 @@ async function generateJson<T>({ model, contents, config, retries = 2 }: GenPara
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const response = await client.models.generateContent({ model, contents, config });
-      return JSON.parse(response.text ?? "{}") as T;
+      return parseModelJson<T>(response.text);
     } catch (err) {
       lastErr = err;
       if (attempt < retries && isRetryable(err)) {
