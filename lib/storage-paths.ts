@@ -79,3 +79,16 @@ export function isXlegalUploadedDocUrl(raw: string): boolean {
   const pathname = blobUrlPathname(raw);
   return pathname !== null && isFileUnder(pathname, ["xlegal/docs/"]);
 }
+
+/**
+ * What POST /api/evaluate (demo) and POST /api/checkout (premium) accept as a
+ * document in a JSON body: a file the browser uploaded to `casos/`
+ * (AnalyzingCard and app/pro/page.tsx, through /api/upload). Both flows delete
+ * the files they were handed once they are done — /api/evaluate's del() and
+ * /api/pro/run's storageDelete() — so any other blob of the store (`xlegal/`,
+ * a result, `pro/`) would be deleted on the caller's say-so.
+ */
+export function isDemoUploadedDocUrl(raw: string): boolean {
+  const pathname = blobUrlPathname(raw);
+  return pathname !== null && isFileUnder(pathname, ["casos/"]);
+}

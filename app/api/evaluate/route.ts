@@ -5,6 +5,7 @@ import { prepareDoc, totalContentLength } from "@/lib/docs";
 import { buildDemoVerdict } from "@/lib/demo";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILE_BYTES, MAX_FILE_MB, MAX_FILES } from "@/lib/analysis";
+import { isDemoUploadedDocUrl } from "@/lib/storage-paths";
 import type { VerdictResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -123,14 +124,11 @@ async function handleBlobJob(request: Request): Promise<NextResponse> {
       { status: 400 },
     );
   }
+  // Only what the browser uploaded to casos/: processJob deletes these refs when
+  // it is done, so any other blob of the store (xlegal/, a result, pro/) is not
+  // the caller's to name.
   for (const ref of refs) {
-    let host: string;
-    try {
-      host = new URL(ref.url).hostname;
-    } catch {
-      return NextResponse.json({ error: "URL de archivo inválida." }, { status: 400 });
-    }
-    if (!host.endsWith(".blob.vercel-storage.com")) {
+    if (!isDemoUploadedDocUrl(ref.url)) {
       return NextResponse.json({ error: "URL de archivo no permitida." }, { status: 400 });
     }
   }

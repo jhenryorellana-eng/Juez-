@@ -4,6 +4,7 @@ import {
   blobUrlPathname,
   exactBlob,
   isAllowedUploadPathname,
+  isDemoUploadedDocUrl,
   isXlegalClientFilePathname,
   isXlegalUploadedDocUrl,
 } from "../storage-paths";
@@ -90,6 +91,38 @@ describe("isXlegalClientFilePathname", () => {
       "xlegal/informes/./a.pdf",
     ]) {
       assert.equal(isXlegalClientFilePathname(pathname), false, pathname);
+    }
+  });
+});
+
+describe("isDemoUploadedDocUrl", () => {
+  it("accepts a document the browser uploaded to casos/ (demo and premium)", () => {
+    assert.equal(isDemoUploadedDocUrl(`${BLOB}casos/Documento-AbC.pdf`), true);
+    assert.equal(isDemoUploadedDocUrl(`${BLOB}casos/Acta%20Nacimiento-AbC.pdf`), true);
+  });
+
+  it("refuses xlegal/ and every other blob of the store, a traversal, or a non-Blob URL", () => {
+    // /api/evaluate and /api/pro/run delete the files they were handed: none of
+    // these is the caller's to name.
+    for (const url of [
+      `${BLOB}xlegal/docs/Documento-AbC.pdf`,
+      `${BLOB}xlegal/informes/informe-a.pdf`,
+      `${BLOB}xlegal/results/a.json`,
+      `${BLOB}xlegal/.purge-marker.json`,
+      `${BLOB}pro/jobs/a.json`,
+      `${BLOB}pro/docs/a/0-a.pdf`,
+      `${BLOB}resultados/a.json`,
+      `${BLOB}casos/`,
+      `${BLOB}casos/..%2Fxlegal%2Fdocs%2Fa.pdf`,
+      `${BLOB}casos/%2E%2E/xlegal/results/a.json`,
+      "http://abc123.public.blob.vercel-storage.com/casos/a.pdf",
+      "https://blob.vercel-storage.com.evil.example/casos/a.pdf",
+      "https://abc.supabase.co/storage/v1/object/sign/casos/a.pdf?token=x",
+      "/api/dev/file?path=casos%2Fa.pdf",
+      "not a url",
+      "",
+    ]) {
+      assert.equal(isDemoUploadedDocUrl(url), false, url);
     }
   });
 });
