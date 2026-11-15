@@ -88,27 +88,55 @@ async function generateJson<T>(params: GenParams): Promise<T> {
   return generateJsonWith<T>((request) => client.models.generateContent(request), params);
 }
 
-/** generateJson's retry loop, with the model call and the wait injectable (tests). */
+/**
+ * How many times an answer that is not JSON (MODEL_JSON_INVALID) is retried. A
+ * blank or cut answer is usually transient — the output cut at MAX_TOKENS after
+ * the thinking, a hiccup of the service — so one more try often succeeds, and
+ * failing the job on the first one ended a paid report (premium, /xlegal) that a
+ * retry would have saved. Only one: a model that answers garbage twice in a row
+ * is not having a hiccup, and every try of the premium report is a full
+ * generation (~2 min with MEDIUM thinking; on /xlegal the job's budget may then
+ * run out first, which closes it as TIMEOUT_BUDGET — failed either way).
+ */
+const INVALID_JSON_RETRIES = 1;
+
+/**
+ * generateJson's retry loop, with the model call and the wait injectable (tests).
+ *
+ * Two separate counters: `retries` more tries on a transient error of the
+ * provider (503/429…, isRetryable), and INVALID_JSON_RETRIES on an answer that
+ * is not JSON. Neither spends the other's: a bad answer is not an overloaded
+ * model, and the fallback to MODELS.judgeFallback still hangs on isRetryable.
+ */
 export async function generateJsonWith<T>(
   generate: GenerateContent,
   { model, contents, config, retries = 2 }: GenParams,
   wait: (ms: number) => Promise<void> = sleep,
 ): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  let transientRetries = 0;
+  let invalidJsonRetries = 0;
+  for (;;) {
     try {
       const response = await generate({ model, contents, config });
       return parseModelJson<T>(response.text);
     } catch (err) {
-      lastErr = err;
-      if (attempt < retries && isRetryable(err)) {
-        await wait(700 * (attempt + 1));
+      if (isInvalidJson(err) && invalidJsonRetries < INVALID_JSON_RETRIES) {
+        invalidJsonRetries += 1;
+        await wait(700);
+        continue;
+      }
+      if (isRetryable(err) && transientRetries < retries) {
+        transientRetries += 1;
+        await wait(700 * transientRetries);
         continue;
       }
       throw err;
     }
   }
-  throw lastErr;
+}
+
+function isInvalidJson(err: unknown): boolean {
+  return err instanceof Error && err.message === "MODEL_JSON_INVALID";
 }
 
 const VERDICT_SCHEMA: Schema = {
