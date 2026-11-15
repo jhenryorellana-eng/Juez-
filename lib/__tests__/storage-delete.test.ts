@@ -24,6 +24,16 @@ describe("safeBlobErrorMessage", () => {
     const message = safeBlobErrorMessage(new TypeError(`fetch failed for ${CLIENT_FILE}`));
     assert.equal(message, "TypeError");
   });
+
+  it("keeps the code of one of our own CODE:detail errors, never its detail", () => {
+    // /api/upload refuses a pathname with PATHNAME_NOT_ALLOWED, and storagePut
+    // with UNSAFE_PATH:<pathname> — whose pathname carries the client's file name.
+    assert.equal(safeBlobErrorMessage(new Error("PATHNAME_NOT_ALLOWED")), "PATHNAME_NOT_ALLOWED");
+    assert.equal(
+      safeBlobErrorMessage(new Error("UNSAFE_PATH:pro/docs/job/0-Pasaporte Nombre Cliente.pdf")),
+      "UNSAFE_PATH",
+    );
+  });
 });
 
 describe("storageDeleteMany", () => {

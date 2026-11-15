@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { MAX_FILE_BYTES } from "@/lib/analysis";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { safeBlobErrorMessage } from "@/lib/storage";
 import { isAllowedUploadPathname } from "@/lib/storage-paths";
 
 export const runtime = "nodejs";
@@ -62,7 +63,9 @@ export async function POST(request: Request) {
     });
     return NextResponse.json(result);
   } catch (error) {
-    console.error("[upload] error:", (error as Error).message);
+    // Only a code or the SDK's fixed sentence: a message built from the request
+    // could quote the pathname, which carries the client's file name.
+    console.error("[upload] error:", safeBlobErrorMessage(error));
     return NextResponse.json(
       { error: "No se pudo autorizar la subida del archivo." },
       { status: 400 },

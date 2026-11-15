@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createCheckoutSession, stripeConfigured } from "@/lib/stripe";
-import { storageAvailable, storagePut } from "@/lib/storage";
+import { safeBlobErrorMessage, storageAvailable, storagePut } from "@/lib/storage";
+import { safeErrorMessage } from "@/lib/safe-error";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { isDemoUploadedDocUrl } from "@/lib/storage-paths";
 import { MAX_FILES, MAX_FILE_BYTES, MAX_FILE_MB } from "@/lib/analysis";
@@ -57,7 +58,9 @@ export async function POST(request: Request) {
     if (message.startsWith("VALIDATION:")) {
       return NextResponse.json({ error: message.slice(11) }, { status: 400 });
     }
-    console.error("[checkout] error leyendo la solicitud:", message);
+    // The body (a JSON parse error quotes it) or storagePut (UNSAFE_PATH:<pathname>,
+    // a Blob error about pro/docs/<file name>): only a code, never the text.
+    console.error("[checkout] error leyendo la solicitud:", safeBlobErrorMessage(error));
     return NextResponse.json({ error: "Solicitud inválida." }, { status: 400 });
   }
 
@@ -89,7 +92,7 @@ export async function POST(request: Request) {
   try {
     await storagePut(`pro/jobs/${jobId}.json`, JSON.stringify(job), "application/json");
   } catch (error) {
-    console.error("[checkout] no se pudo guardar el trabajo:", (error as Error).message);
+    console.error("[checkout] no se pudo guardar el trabajo:", safeBlobErrorMessage(error));
     return NextResponse.json(
       { error: "No pudimos registrar tu solicitud. Inténtalo de nuevo." },
       { status: 500 },
@@ -114,7 +117,8 @@ export async function POST(request: Request) {
     if (!session.url) throw new Error("SESSION_WITHOUT_URL");
     return NextResponse.json({ url: session.url });
   } catch (error) {
-    console.error("[checkout] stripe:", (error as Error).message);
+    // STRIPE_ERROR: <message>: Stripe's message can quote the request (the email).
+    console.error("[checkout] stripe:", safeErrorMessage(error));
     return NextResponse.json(
       { error: "No pudimos iniciar el pago. Inténtalo de nuevo." },
       { status: 502 },

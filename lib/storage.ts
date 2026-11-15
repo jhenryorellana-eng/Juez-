@@ -23,6 +23,7 @@ import {
   BlobStoreSuspendedError,
   BlobUnknownError,
 } from "@vercel/blob";
+import { safeErrorMessage } from "./safe-error";
 import { blobUrlPathname, exactBlob } from "./storage-paths";
 
 const DEV_ROUTE = "/api/dev/file?path=";
@@ -274,14 +275,17 @@ const FIXED_MESSAGE_BLOB_ERRORS = [
  * builds some errors from the server's own message (`new BlobError(message)`),
  * and nothing guarantees that message never quotes a URL or a pathname — which,
  * under xlegal/docs/, carries the client's file name. So only the SDK's fixed
- * sentences survive; of anything else, just its kind.
+ * sentences survive; of any other Blob error, just that it was one; and of an
+ * error that is not the SDK's, what safeErrorMessage keeps: the code of our own
+ * `CODE:detail` (PATHNAME_NOT_ALLOWED, UNSAFE_PATH — never its detail), or the
+ * error's kind.
  */
 export function safeBlobErrorMessage(error: unknown): string {
   if (FIXED_MESSAGE_BLOB_ERRORS.some((kind) => error instanceof kind)) {
     return (error as Error).message;
   }
   if (error instanceof BlobError) return "BlobError (message omitted)";
-  return error instanceof Error ? error.name : typeof error;
+  return safeErrorMessage(error);
 }
 
 /**

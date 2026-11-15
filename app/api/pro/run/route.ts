@@ -1,10 +1,12 @@
 import { NextResponse, after } from "next/server";
 import {
+  safeBlobErrorMessage,
   storagePut,
   storageReadJson,
   storageDelete,
   storageDeleteAt,
 } from "@/lib/storage";
+import { safeErrorMessage } from "@/lib/safe-error";
 import { buildInformeFromFiles } from "@/lib/informe-pipeline";
 import { getCheckoutSession, stripeConfigured } from "@/lib/stripe";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
@@ -69,7 +71,8 @@ export async function POST(request: Request) {
       }
       jobId = session.metadata?.jobId ?? "";
     } catch (error) {
-      console.error("[pro:run] stripe:", (error as Error).message);
+      // STRIPE_ERROR: <message>: Stripe's message can quote the request (the email).
+      console.error("[pro:run] stripe:", safeErrorMessage(error));
       return NextResponse.json(
         { error: "No pudimos verificar el pago." },
         { status: 502 },
@@ -121,7 +124,8 @@ async function processProJob(jobId: string, job: ProJob): Promise<void> {
 
     result = { status: "done", informe, pdfUrl, cliente: job.cliente };
   } catch (error) {
-    console.error("[pro:job] error:", (error as Error).message);
+    // DOWNLOAD_FAILED:/UNSUPPORTED:/TOO_LARGE: carry the document's name: only the code.
+    console.error("[pro:job] error:", safeErrorMessage(error));
     result = {
       status: "error",
       error:
@@ -132,7 +136,7 @@ async function processProJob(jobId: string, job: ProJob): Promise<void> {
   try {
     await storagePut(`pro/results/${jobId}.json`, JSON.stringify(result), "application/json");
   } catch (error) {
-    console.error("[pro:job] no se pudo guardar el resultado:", (error as Error).message);
+    console.error("[pro:job] no se pudo guardar el resultado:", safeBlobErrorMessage(error));
   }
 
   // Privacidad: los documentos del cliente se eliminan al terminar.
