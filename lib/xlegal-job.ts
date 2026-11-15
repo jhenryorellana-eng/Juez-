@@ -87,7 +87,10 @@ export interface JobDeps {
 const defaultJobDeps: JobDeps = {
   // Variante sin bloques comerciales: este cliente ya contrató el reforzamiento
   // en x-legal, así que el informe no le vende precios ni revisión de abogado.
-  generate: (job) => buildInformeFromFiles(job.files, job.cliente, { variant: "xlegal" }),
+  // No deadline for the model's retry: the race with the job's budget below
+  // bounds the generation, and closes it as TIMEOUT_BUDGET in time.
+  generate: (job) =>
+    buildInformeFromFiles(job.files, job.cliente, { variant: "xlegal", deadline: undefined }),
   closeout: defaultCloseoutDeps,
 };
 

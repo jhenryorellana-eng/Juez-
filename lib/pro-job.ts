@@ -11,17 +11,33 @@ import { safeErrorMessage } from "./safe-error";
 import { buildInformeFromFiles, type FileRef } from "./informe-pipeline";
 import type { ClienteInfo, Informe, ProJob, ProResult } from "./types";
 
+/** `maxDuration` of /api/pro/run, in ms (a test keeps the two equal). The clock starts when the REQUEST arrives. */
+export const PRO_MAX_DURATION_MS = 300_000;
+
+/**
+ * What the job still does once the report is generated, held back from the
+ * generation's deadline: render the PDF, store it, store the result and delete
+ * the documents. A generation that runs into it would leave the job to be
+ * killed with no result written — and a killed job is a client who paid, left
+ * on «processing».
+ */
+export const PRO_CLOSEOUT_RESERVE_MS = 30_000;
+
 /** What the job talks to — injectable for tests. */
 export interface ProJobDeps {
-  /** Downloads the documents, generates the report and renders its PDF. */
-  build(files: FileRef[], cliente: ClienteInfo): Promise<{ informe: Informe; pdf: Buffer }>;
+  /** Downloads the documents, generates the report and renders its PDF, within `deadline` (epoch ms). */
+  build(
+    files: FileRef[],
+    cliente: ClienteInfo,
+    options: { deadline: number },
+  ): Promise<{ informe: Informe; pdf: Buffer }>;
   put(pathname: string, data: Buffer | string, contentType: string): Promise<string>;
   /** Deletes the client's documents; never throws (storageDelete swallows its errors). */
   deleteFiles(urls: string[]): Promise<void>;
 }
 
 export const defaultProJobDeps: ProJobDeps = {
-  build: (files, cliente) => buildInformeFromFiles(files, cliente),
+  build: (files, cliente, { deadline }) => buildInformeFromFiles(files, cliente, { deadline }),
   put: storagePut,
   deleteFiles: storageDelete,
 };
@@ -33,15 +49,21 @@ export const proInformePath = (jobId: string) => `pro/informes/informe-${jobId}.
 export const PRO_JOB_ERROR_MESSAGE =
   "No pudimos completar tu informe. Tu pago está registrado: vuelve a intentarlo desde esta misma página o contáctanos.";
 
-/** Descarga los documentos, genera el informe + PDF y guarda el resultado. */
+/**
+ * Descarga los documentos, genera el informe + PDF y guarda el resultado.
+ * `requestStartedAt` is when POST /api/pro/run began: the platform ends the
+ * function PRO_MAX_DURATION_MS after it, after() included.
+ */
 export async function processProJob(
   jobId: string,
   job: ProJob,
+  requestStartedAt: number,
   deps: ProJobDeps = defaultProJobDeps,
 ): Promise<void> {
+  const deadline = requestStartedAt + PRO_MAX_DURATION_MS - PRO_CLOSEOUT_RESERVE_MS;
   let result: ProResult;
   try {
-    const { informe, pdf } = await deps.build(job.files, job.cliente);
+    const { informe, pdf } = await deps.build(job.files, job.cliente, { deadline });
     const pdfUrl = await deps.put(proInformePath(jobId), pdf, "application/pdf");
 
     result = { status: "done", informe, pdfUrl, cliente: job.cliente };

@@ -52,6 +52,12 @@ interface GenParams {
   contents: ContentListUnion;
   config: Record<string, unknown>;
   retries?: number;
+  /**
+   * When the caller's handler ends (epoch ms), minus what it still needs after
+   * the model answers; undefined = no limit. Required, not optional, so that a
+   * caller that forgets to pass its deadline on is a type error.
+   */
+  deadline: number | undefined;
 }
 
 /**
@@ -94,14 +100,33 @@ async function generateJson<T>(params: GenParams): Promise<T> {
  * the thinking, a hiccup of the service — so one more try often succeeds, and
  * failing the job on the first one ended a paid report (premium, /xlegal) that a
  * retry would have saved. Only one: a model that answers garbage twice in a row
- * is not having a hiccup, and every try of the premium report is a full
- * generation (~2 min with MEDIUM thinking; on /xlegal the job's budget may then
- * run out first, which closes it as TIMEOUT_BUDGET — failed either way).
+ * is not having a hiccup.
+ *
+ * And only if it fits (GenParams.deadline): every try of a report is a full
+ * generation (minutes on a large case file, even with LOW thinking). The
+ * premium job (/api/pro/run, maxDuration 300) has no budget of its own: a
+ * retry that outlasted the function would be killed with it, and a killed job
+ * writes no result — the client who paid would be left on «processing» for
+ * good, where the error result tells them to retry. On /xlegal the job's own
+ * budget closes it as TIMEOUT_BUDGET first, so it passes no deadline here.
  */
 const INVALID_JSON_RETRIES = 1;
 
+/** The pause before that retry. */
+const INVALID_JSON_RETRY_WAIT_MS = 700;
+
 /**
- * generateJson's retry loop, with the model call and the wait injectable (tests).
+ * Whether a second try of the same request fits before `deadline`, assuming it
+ * takes as long as the try that just failed: there is no better estimate of a
+ * generation over the same documents than the one that just ran.
+ */
+function retryFits(deadline: number | undefined, attemptMs: number, now: () => number): boolean {
+  return deadline === undefined || now() + INVALID_JSON_RETRY_WAIT_MS + attemptMs <= deadline;
+}
+
+/**
+ * generateJson's retry loop, with the model call, the wait and the clock
+ * injectable (tests).
  *
  * Two separate counters: `retries` more tries on a transient error of the
  * provider (503/429…, isRetryable), and INVALID_JSON_RETRIES on an answer that
@@ -110,20 +135,25 @@ const INVALID_JSON_RETRIES = 1;
  */
 export async function generateJsonWith<T>(
   generate: GenerateContent,
-  { model, contents, config, retries = 2 }: GenParams,
+  { model, contents, config, retries = 2, deadline }: GenParams,
   wait: (ms: number) => Promise<void> = sleep,
+  now: () => number = Date.now,
 ): Promise<T> {
   let transientRetries = 0;
   let invalidJsonRetries = 0;
   for (;;) {
+    const attemptStartedAt = now();
     try {
       const response = await generate({ model, contents, config });
       return parseModelJson<T>(response.text);
     } catch (err) {
       if (isInvalidJson(err) && invalidJsonRetries < INVALID_JSON_RETRIES) {
-        invalidJsonRetries += 1;
-        await wait(700);
-        continue;
+        if (retryFits(deadline, now() - attemptStartedAt, now)) {
+          invalidJsonRetries += 1;
+          await wait(INVALID_JSON_RETRY_WAIT_MS);
+          continue;
+        }
+        console.error("[gemini] MODEL_JSON_INVALID not retried: a second try would end past the deadline");
       }
       if (isRetryable(err) && transientRetries < retries) {
         transientRetries += 1;
@@ -305,6 +335,9 @@ async function runEvaluation(docs: PreparedDoc[], uploads: GeminiUploads): Promi
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 2,
+      // No deadline: an evaluation at LOW takes well under a minute, and its
+      // route's maxDuration (300 s) holds both tries.
+      deadline: undefined,
     });
     return normalizeVerdict(verdict);
   } catch (err) {
@@ -314,6 +347,7 @@ async function runEvaluation(docs: PreparedDoc[], uploads: GeminiUploads): Promi
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
       retries: 1,
+      deadline: undefined,
     });
     return normalizeVerdict(verdict);
   }
@@ -530,15 +564,17 @@ function buildInformeSchema(variant: InformeVariant): Schema {
 export function generateInforme(
   docs: PreparedDoc[],
   cliente: ClienteInfo,
-  variant: InformeVariant = "pro",
+  variant: InformeVariant,
+  { deadline }: { deadline: number | undefined },
 ): Promise<Informe> {
-  return withGeminiUploads((uploads) => runInforme(docs, cliente, variant, uploads));
+  return withGeminiUploads((uploads) => runInforme(docs, cliente, variant, deadline, uploads));
 }
 
 async function runInforme(
   docs: PreparedDoc[],
   cliente: ClienteInfo,
   variant: InformeVariant,
+  deadline: number | undefined,
   uploads: GeminiUploads,
 ): Promise<Informe> {
   const parts = await buildParts(docs, uploads);
@@ -575,6 +611,7 @@ async function runInforme(
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 1,
+      deadline,
     });
     return normalizeInforme(informe, research?.fuentes ?? [], variant);
   } catch (err) {
@@ -584,6 +621,7 @@ async function runInforme(
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
       retries: 1,
+      deadline,
     });
     return normalizeInforme(informe, research?.fuentes ?? [], variant);
   }

@@ -19,7 +19,7 @@ texto grande, alto contraste y botones grandes. Parte de la familia de marca **x
 | Nivel | Ruta | Qué entrega |
 |---|---|---|
 | **Demo gratis** | `/` | Diagnóstico en pantalla: score 0-100, nivel de preparación A/B/C, matriz de solidez por elemento legal, contrainterrogatorio simulado. Se embebe en iframe dentro de x-legal. |
-| **Informe premium $50** | `/pro` | Análisis profundo (thinking MEDIUM) + "Informe de Evaluación y Propuesta de Reforzamiento" personalizado: en pantalla y en **PDF descargable** con la marca USA Latino Prime (ficha del caso, estado actual, debilidades desarrolladas, normas legales, tabla de costos $400/$650 y recomendación final). |
+| **Informe premium $50** | `/pro` | Análisis profundo (thinking LOW, como el resto desde v8) + "Informe de Evaluación y Propuesta de Reforzamiento" personalizado: en pantalla y en **PDF descargable** con la marca USA Latino Prime (ficha del caso, estado actual, debilidades desarrolladas, normas legales, tabla de costos $400/$650 y recomendación final). |
 
 Embudo comercial: demo gratis → informe de $50 → servicio de reforzamiento ($400/$650).
 
@@ -59,11 +59,16 @@ Con varios documentos, el prompt cruza la **consistencia entre ellos** (fechas, 
 | Uso | Modelo | Thinking |
 |---|---|---|
 | Diagnóstico demo | `gemini-3.5-flash` | LOW (MEDIUM tardaba ~2 min y rompía el timeout móvil) |
-| Informe premium (en segundo plano) | `gemini-3.5-flash` | MEDIUM |
+| Informe premium (en segundo plano) | `gemini-3.5-flash` | LOW (MEDIUM costaba minutos por documento y agotaba el tiempo de la función) |
 | Respaldo si hay sobrecarga (503/429) | `gemini-3.1-flash-lite` | MINIMAL / LOW |
 
 Reintentos con backoff ante errores transitorios, y uno más (aparte) si la respuesta no es
-JSON válido; si todo falla, modo demo local.
+JSON válido. En el informe premium ese segundo intento es otra generación completa, así que
+solo se hace si cabe antes de que venza `/api/pro/run` (300 s desde la petición, menos 30 s
+para el PDF y las escrituras), suponiendo que dura lo que el primero: si no cabe, el job
+termina en error y el cliente ve «vuelve a intentarlo» en vez de quedarse esperando un
+informe que la plataforma ya no dejaría escribir (`lib/pro-job.ts`). En `/xlegal` lo acota
+el presupuesto del job. En el demo, si todo falla, modo demo local.
 Salida forzada a JSON (`responseSchema`) y normalizada en el servidor.
 
 ## Diseño
@@ -304,7 +309,8 @@ npm run dev
   argumento, `${error}`, `String(error)`, `{ error }`). Un envío del webhook que se cortó
   por tiempo queda como `TimeoutError`. Una respuesta del modelo que no es JSON válido se
   convierte en `MODEL_JSON_INVALID`, sin su texto (el `SyntaxError` lo citaba), y se
-  reintenta **una vez**, con su propio contador (no gasta los reintentos de un 503/429).
+  reintenta **una vez**, con su propio contador (no gasta los reintentos de un 503/429), y en
+  el premium solo si cabe antes del límite de la función (ver *Modelos de IA*).
   Ni la puntuación del informe ni el mensaje de un error de Blob que pueda citar una URL
   (`safeBlobErrorMessage`, que de un error que no es de Blob deja lo mismo que
   `safeErrorMessage`) llegan al log.

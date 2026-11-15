@@ -31,6 +31,8 @@ export async function GET(request: Request) {
 /*  POST /api/pro/run — verifica el pago y arranca (o reanuda) el análisis     */
 /* -------------------------------------------------------------------------- */
 export async function POST(request: Request) {
+  // Start of the maxDuration clock: the job in after() runs on what is left of it.
+  const requestStartedAt = Date.now();
   const limit = rateLimit(`pro-run:${getClientIp(request)}`, 10);
   if (!limit.ok) {
     return NextResponse.json(
@@ -99,7 +101,7 @@ export async function POST(request: Request) {
       JSON.stringify({ ...job, status: "processing" satisfies ProJob["status"] }),
       "application/json",
     );
-    after(() => processProJob(jobId, job));
+    after(() => processProJob(jobId, job, requestStartedAt));
   }
 
   return NextResponse.json({ jobId }, { status: 202 });
