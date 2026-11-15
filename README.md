@@ -62,7 +62,8 @@ Con varios documentos, el prompt cruza la **consistencia entre ellos** (fechas, 
 | Informe premium (en segundo plano) | `gemini-3.5-flash` | MEDIUM |
 | Respaldo si hay sobrecarga (503/429) | `gemini-3.1-flash-lite` | MINIMAL / LOW |
 
-Reintentos con backoff ante errores transitorios; si todo falla, modo demo local.
+Reintentos con backoff ante errores transitorios, y uno más (aparte) si la respuesta no es
+JSON válido; si todo falla, modo demo local.
 Salida forzada a JSON (`responseSchema`) y normalizada en el servidor.
 
 ## Diseño
@@ -116,14 +117,49 @@ Contrato v1 (resumen):
 - `GET {XLEGAL_API_URL}/api/juez/sessions/{token}` — sesión (cliente, intentos, PDF).
 - `POST …/sessions/{token}/consume` — consume el intento (idempotente por `jobId`; 409 sin intentos).
 - `POST {XLEGAL_API_URL}/api/webhooks/juez` — Juez entrega `evaluation.completed|failed`,
-  firmado con HMAC-SHA256 del raw body en `x-juez-signature`. Tres envíos (reintentos a
-  los 2 s y 8 s), y cada uno se corta a los 12 s: en el peor caso, 46 s, que caben en los
-  60 s que el job se reserva para cerrarse (`CLOSEOUT_RESERVE_MS`; un test lo vigila).
-  Hasta el 2026-11-14 eran cuatro (2 s / 8 s / 30 s) sin tope por envío: un x-legal
-  colgado podía alargar el cierre más allá del límite de la plataforma. Si los tres
-  fallan, la red es `/api/xlegal/status`.
+  firmado con HMAC-SHA256 del raw body en `x-juez-signature`. Cuántos envíos y cuánto
+  espera cada uno depende del tiempo que le queda a la función cuando sale el webhook
+  (`webhookScheduleFor` en `lib/xlegal.ts`; desde el 2026-11-14), siempre dejando 10 s
+  para las escrituras y borrados del cierre:
+  - **Con tiempo de sobra** (la generación dejó ≥ 230 s): cuatro envíos (0 / 2 s / 8 s /
+    30 s), 45 s cada uno.
+  - **Entrega normal** (una generación de ~2 min): tres envíos (0 / 2 s / 8 s), cada uno
+    tan largo como quepa, hasta 45 s; con ~2 min de generación, los 45 s enteros.
+  - **Presupuesto agotado** (`TIMEOUT_BUDGET`, o un informe que estuvo listo cuando ya
+    vencía): quedan los 60 s de `CLOSEOUT_RESERVE_MS`, y los tres envíos se cortan a los
+    ~12-13 s; peor caso 46 s. Un test recorre todos los tiempos restantes, de 15 s a
+    300 s, y comprueba que el peor caso cabe.
+  - Con casi nada (la reserva se consumió antes del cierre): un solo envío con lo que quede.
+
+  Por qué 45 s: x-legal contesta `evaluation.completed` solo cuando terminó todo, y antes
+  descarga el PDF con un timeout de 30 s (su handler tiene `maxDuration` 60). Con 45 s no
+  se corta un x-legal lento que sí va a terminar. El cuarto envío solo existe si los
+  cuatro caben a 45 s: cortado el tercero a los 45 s y esperados 30 s, llega pasados los
+  60 s de `maxDuration` de x-legal, así que encuentra el evento ya procesado (`200` al
+  momento, y Juez olvida al cliente) o reintenta limpio. Si no caben cuatro, se prefiere
+  un envío más largo a uno más: un envío cortado es lo que duplica la cadena en x-legal
+  (abajo), y un 5xx de más de 10 s es lo que cubre la reconciliación.
+  Hasta el 2026-11-14 eran tres envíos de 12 s en todos los casos; antes, cuatro sin
+  tope por envío. Si fallan todos, la red es `/api/xlegal/status`.
   Tras el `200`, Juez borra el PDF (x-legal ya lo tiene) y olvida al cliente
   (ver *Retención de `xlegal/`*).
+
+  Dos límites conocidos de este contrato:
+  - **Un envío cortado no detiene a x-legal.** Si x-legal tarda más que el tope de ese
+    envío, el reintento llega mientras el primero sigue trabajando: `claimWebhookEvent`
+    encuentra el evento reclamado y sin procesar, contesta `retry`, y x-legal ejecuta la
+    cadena entera **dos veces** en paralelo (la línea de «Tu evaluación está lista» del
+    cliente y sus avisos, por duplicado). Con 45 s por envío solo pasa con un x-legal de
+    más de 45 s; en el camino del presupuesto agotado, con uno de más de ~12 s.
+    Seguimiento en x-legal: que un reclamo **en curso** conteste `409` sin volver a
+    procesar (como ya hace su idempotencia de escrituras de entrada con `in_progress`).
+  - **Un resultado que x-legal sí procesó puede quedarse como no entregado.** Si se cortan
+    todos los envíos pero x-legal terminó, el resultado sigue con `webhookDelivered: false`:
+    el informe completo, el cliente y el PDF se quedan en `xlegal/` **hasta la purga de 30
+    días**. La reconciliación de x-legal no lo pide, porque solo revisa evaluaciones
+    `in_progress` y esta ya figura como completada. Seguimiento posible (no en este PR):
+    que el cron diario reenvíe el webhook de los resultados no entregados de más de 1 h;
+    el dedupe de x-legal contesta `200` al momento y entonces Juez olvida al cliente.
 - `GET /api/xlegal/status?jobId=` (en Juez) — reconciliación si el webhook no llegó.
   Protegido con `x-api-key`. **Decisión v1**: la misma `XLEGAL_API_KEY` sirve en ambas
   direcciones (un solo secreto compartido).
@@ -257,15 +293,21 @@ npm run dev
   (`isXlegalUploadedDocUrl`). Los dos primeros borran al terminar los archivos que se les
   dieron: sin esa regla, su `del()` final podía borrar cualquier blob de `xlegal/`.
 - Los logs de `/xlegal` (sus cuatro rutas, el job, el cierre, la purga y las llamadas a
-  x-legal), los del demo (`/api/evaluate`) y los de Gemini llevan el código de error, no
-  el mensaje: un `CODIGO:detalle` suele llevar el nombre del documento. Un mensaje sin
-  código no se registra (ni truncado): solo el tipo del error, y el estado HTTP si es un
-  `ApiError` de Gemini (`lib/safe-error.ts`). Lo vigila `lib/__tests__/log-hygiene.test.ts`,
-  que falla si alguna llamada a `console.*` de esos archivos usa un `message`. Un envío del
-  webhook que se cortó por tiempo queda como `TimeoutError`. Una respuesta del modelo que no es JSON válido se convierte en
-  `MODEL_JSON_INVALID`, sin su texto (el `SyntaxError` lo citaba). Ni la puntuación del
-  informe ni el mensaje de un error de Blob que pueda citar una URL (`safeBlobErrorMessage`)
-  llegan al log.
+  x-legal), los del demo (`/api/evaluate`), los del flujo premium (`/api/checkout`,
+  `/api/upload`, `/api/pro/run`, desde el 2026-11-14), los de Gemini y los de
+  `lib/storage.ts` llevan el código de error, no el mensaje: un `CODIGO:detalle` suele
+  llevar el nombre del documento, y un error de Stripe puede citar el correo. Un mensaje
+  sin código no se registra (ni truncado): solo el tipo del error, y el estado HTTP si es
+  un `ApiError` de Gemini (`lib/safe-error.ts`). Lo vigila `lib/__tests__/log-hygiene.test.ts`,
+  que falla si alguna llamada a `console.*` (también `debug` y `trace`) de esos archivos
+  usa un `message` o un `stack`, o imprime el error mismo (`error`, `err` o `e` como
+  argumento, `${error}`, `String(error)`, `{ error }`). Un envío del webhook que se cortó
+  por tiempo queda como `TimeoutError`. Una respuesta del modelo que no es JSON válido se
+  convierte en `MODEL_JSON_INVALID`, sin su texto (el `SyntaxError` lo citaba), y se
+  reintenta **una vez**, con su propio contador (no gasta los reintentos de un 503/429).
+  Ni la puntuación del informe ni el mensaje de un error de Blob que pueda citar una URL
+  (`safeBlobErrorMessage`, que de un error que no es de Blob deja lo mismo que
+  `safeErrorMessage`) llegan al log.
 - El iframe solo se permite desde `contygo.app` y, mientras dure su alias de
   migración, desde `x-legal.usalatinoprime.com` (ver `next.config.mjs`).
 

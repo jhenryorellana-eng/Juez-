@@ -381,6 +381,27 @@ $400/$650 es el modelo de negocio y se queda tal cual.
   - [x] `.npmrc`: `package-lock.json` trae `@img/sharp-linux-x64` (0.34.5) y
         `@esbuild/linux-x64` (0.28.2) como `optional`; sin cambios.
   - [ ] Seguimiento, fuera de este PR: barrido de 30 días para `casos/` (y decidir `pro/`).
+- Quinta revisión (bajos de security + code, con APPROVE de ambos), mismo PR:
+  - [x] Webhook: el tope por envío sale del tiempo que le queda a la función cuando sale el
+        webhook (`webhookScheduleFor`, `lib/xlegal.ts`), con 10 s libres para el cierre. Con
+        tiempo de sobra, cuatro envíos (0 / 2 / 8 / 30 s) de 45 s; una entrega normal (~2 min
+        de generación), tres de 45 s; el camino del presupuesto agotado, tres de ~12-13 s. Un
+        test recorre los tiempos restantes de 15 s a 300 s y comprueba que el peor caso cabe.
+        El cuarto envío vuelve solo cuando caben los cuatro a 45 s: llega pasados los 60 s de
+        `maxDuration` de x-legal (encuentra el evento procesado o reintenta limpio).
+  - [x] README: un x-legal más lento que el tope ejecuta la cadena dos veces (`retry` de
+        `claimWebhookEvent`); un resultado procesado por x-legal con todos los envíos
+        cortados se queda como no entregado hasta la purga de 30 días.
+  - [x] Logs del premium y de `/api/upload`: `safeErrorMessage` / `safeBlobErrorMessage` en
+        `upload/route.ts`, `pro/run/route.ts` (×3) y `checkout/route.ts` (×3).
+        `log-hygiene.test.ts` vigila además esas tres rutas y `lib/storage.ts`, lee
+        `console.debug`/`trace` y falla con el error mismo como argumento (`error`, `err`,
+        `e`, `${error}`, `String(error)`, `{ error }`) o con un `.stack`.
+  - [x] `MODEL_JSON_INVALID`: `generateJson` lo reintenta una vez, con su propio contador.
+  - [ ] Seguimiento en x-legal: que un reclamo de webhook **en curso** conteste `409` sin
+        reprocesar.
+  - [ ] Seguimiento posible (no en este PR): que el cron reenvíe el webhook de los
+        resultados con `webhookDelivered: false` de más de 1 h.
 
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
