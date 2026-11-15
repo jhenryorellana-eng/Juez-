@@ -528,10 +528,23 @@ describe("the webhook's schedule, from the time the function has left", () => {
     assert.equal(store.schedules[0]?.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS);
   });
 
-  it("a report delivered late gets a schedule that still fits before the deadline", async () => {
+  it("a report delivered late gets fewer, longer sends that still fit before the deadline", async () => {
+    // 40 s left: three sends would be cut at ~6.7 s while x-legal downloads the
+    // PDF; the schedule is computed for evaluation.completed, so two of ~14 s.
     const deadline = Date.now() + 40_000;
     await report({ closed: false }, deadline);
     const schedule = store.schedules[0];
+    assert.equal(store.webhooks[0]?.event, "evaluation.completed");
+    assert.deepEqual(schedule?.backoffMs, [0, 2_000]);
+    assert.ok(schedule?.attemptTimeoutMs !== undefined && schedule.attemptTimeoutMs >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS);
+    assert.ok(webhookWorstCaseMs(schedule) <= 40_000 - WEBHOOK_CLOSEOUT_MARGIN_MS);
+  });
+
+  it("a failure with the same time left keeps the three short sends (x-legal answers it at once)", async () => {
+    const deadline = Date.now() + 40_000;
+    await closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET", deadline }, store);
+    const schedule = store.schedules[0];
+    assert.deepEqual(schedule?.backoffMs, WEBHOOK_BACKOFF_MS);
     assert.ok(schedule?.attemptTimeoutMs !== undefined && schedule.attemptTimeoutMs < WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS);
     assert.ok(webhookWorstCaseMs(schedule) <= 40_000 - WEBHOOK_CLOSEOUT_MARGIN_MS);
   });

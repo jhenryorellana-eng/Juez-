@@ -121,9 +121,11 @@ async function deleteOwnedCopies(
 
 /**
  * The webhook, on a schedule computed from the time the function has left NOW,
- * after the close-out's own writes (which may have been slow). With time to
- * spare each send gets x-legal's whole window; on the budget's path, the short
- * sends the reserve guarantees (lib/xlegal.ts → webhookScheduleFor).
+ * after the close-out's own writes (which may have been slow), and for its
+ * event. With time to spare each send gets x-legal's whole window; on the
+ * budget's path, the short sends the reserve guarantees; with less than that,
+ * an `evaluation.completed` gets fewer, longer sends (lib/xlegal.ts →
+ * webhookScheduleFor).
  */
 async function deliverInTime(
   jobId: string,
@@ -131,7 +133,7 @@ async function deliverInTime(
   deadline: number,
   deps: Pick<CloseoutDeps, "deliver">,
 ): Promise<boolean> {
-  const schedule = webhookScheduleFor(deadline - Date.now());
+  const schedule = webhookScheduleFor(deadline - Date.now(), payload.event);
   console.log(
     `[xlegal:job] ${jobId} webhook ${payload.event}: up to ${schedule.backoffMs.length} sends of ${Math.round(schedule.attemptTimeoutMs / 1000)}s`,
   );

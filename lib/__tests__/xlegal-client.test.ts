@@ -8,6 +8,7 @@ import {
   WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
   WEBHOOK_SHORT_WORST_CASE_MS,
   WEBHOOK_SPARE_BACKOFF_MS,
+  WEBHOOK_TWO_SEND_BACKOFF_MS,
   consumeXlegalAttempt,
   deliverXlegalWebhook,
   fetchXlegalSession,
@@ -173,13 +174,17 @@ describe("deliverXlegalWebhook", () => {
 /** Time left when the budget closes a job: the reserve, minus the failure close-out's writes before the webhook. */
 const BUDGET_PATH_REMAINING_MS = [CLOSEOUT_RESERVE_MS - 4_000, CLOSEOUT_RESERVE_MS - 1_000, CLOSEOUT_RESERVE_MS];
 
+const ON_COMPLETED = "evaluation.completed";
+const ON_FAILED = "evaluation.failed";
+const EVENTS = [ON_COMPLETED, ON_FAILED] as const;
+
 describe("webhookScheduleFor", () => {
   it("a normal delivery (a ~2 min generation) gets three sends long enough for x-legal's whole handler", () => {
     // x-legal answers evaluation.completed only after its PDF download (30 s
     // timeout) and the rest of its handler (maxDuration 60): a 12 s cut made a
     // slow x-legal run the chain twice, or left the report here for 30 days.
     for (const generationMs of [90_000, 120_000, 135_000]) {
-      const schedule = webhookScheduleFor(MAX_DURATION_MS - generationMs);
+      const schedule = webhookScheduleFor(MAX_DURATION_MS - generationMs, ON_COMPLETED);
       assert.deepEqual(schedule.backoffMs, WEBHOOK_BACKOFF_MS, `generation ${generationMs} ms`);
       assert.equal(schedule.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, `generation ${generationMs} ms`);
     }
@@ -187,12 +192,12 @@ describe("webhookScheduleFor", () => {
 
   it("a longer generation gets three sends as long as the time left allows, between the short and the long cap", () => {
     // 200 s of generation: 100 s left → (100 − 10 margin − 10 waits) / 3.
-    const schedule = webhookScheduleFor(MAX_DURATION_MS - 200_000);
+    const schedule = webhookScheduleFor(MAX_DURATION_MS - 200_000, ON_COMPLETED);
     assert.deepEqual(schedule, { backoffMs: WEBHOOK_BACKOFF_MS, attemptTimeoutMs: 26_666 });
   });
 
   it("with time to spare (a quick generation), a fourth send 30 s after the third, every send at 45 s", () => {
-    const schedule = webhookScheduleFor(MAX_DURATION_MS - 40_000);
+    const schedule = webhookScheduleFor(MAX_DURATION_MS - 40_000, ON_COMPLETED);
     assert.deepEqual(schedule, {
       backoffMs: WEBHOOK_SPARE_BACKOFF_MS,
       attemptTimeoutMs: WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS,
@@ -201,41 +206,81 @@ describe("webhookScheduleFor", () => {
   });
 
   it("the budget's path (only the reserve left) gets three short sends, of at least 12 s each", () => {
-    for (const remaining of BUDGET_PATH_REMAINING_MS) {
-      const schedule = webhookScheduleFor(remaining);
-      assert.deepEqual(schedule.backoffMs, WEBHOOK_BACKOFF_MS, `remaining ${remaining} ms`);
-      assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS, `remaining ${remaining} ms`);
-      assert.ok(schedule.attemptTimeoutMs < 14_000, `remaining ${remaining} ms: ${schedule.attemptTimeoutMs}`);
+    for (const event of EVENTS) {
+      for (const remaining of BUDGET_PATH_REMAINING_MS) {
+        const schedule = webhookScheduleFor(remaining, event);
+        assert.deepEqual(schedule.backoffMs, WEBHOOK_BACKOFF_MS, `${event}, remaining ${remaining} ms`);
+        assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS, `${event}, remaining ${remaining} ms`);
+        assert.ok(schedule.attemptTimeoutMs < 14_000, `${event}, remaining ${remaining} ms: ${schedule.attemptTimeoutMs}`);
+      }
     }
   });
 
-  it("the worst case always fits in the time left, with the close-out's margin to spare", () => {
+  it("evaluation.completed with less than that left prefers fewer, longer sends: two of at least 12 s each", () => {
+    // 40 s left (a report ready as the budget ran out, after slow writes): three
+    // sends would be cut at 6.7 s, while x-legal downloads the PDF before it
+    // answers — and every send cut while it works makes it run the chain again.
+    assert.deepEqual(webhookScheduleFor(40_000, ON_COMPLETED), {
+      backoffMs: WEBHOOK_TWO_SEND_BACKOFF_MS,
+      attemptTimeoutMs: 14_000,
+    });
+    assert.deepEqual(WEBHOOK_TWO_SEND_BACKOFF_MS, [0, 2_000]);
+  });
+
+  it("evaluation.completed with even less left gets one send with all of it", () => {
+    // 35 s left: two sends would get 11.5 s each.
+    assert.deepEqual(webhookScheduleFor(35_000, ON_COMPLETED), { backoffMs: [0], attemptTimeoutMs: 25_000 });
+  });
+
+  it("evaluation.failed keeps its three short sends there: x-legal answers it at once", () => {
+    assert.deepEqual(webhookScheduleFor(40_000, ON_FAILED), { backoffMs: WEBHOOK_BACKOFF_MS, attemptTimeoutMs: 6_666 });
+    assert.deepEqual(webhookScheduleFor(35_000, ON_FAILED), { backoffMs: WEBHOOK_BACKOFF_MS, attemptTimeoutMs: 5_000 });
+  });
+
+  it("evaluation.completed never cuts a send under 12 s while 12 s fit", () => {
     for (
       let remaining = WEBHOOK_CLOSEOUT_MARGIN_MS + WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS;
       remaining <= MAX_DURATION_MS;
       remaining += 100
     ) {
-      const schedule = webhookScheduleFor(remaining);
+      const available = remaining - WEBHOOK_CLOSEOUT_MARGIN_MS;
+      const schedule = webhookScheduleFor(remaining, ON_COMPLETED);
       assert.ok(
-        webhookWorstCaseMs(schedule) <= remaining - WEBHOOK_CLOSEOUT_MARGIN_MS,
+        schedule.attemptTimeoutMs >= Math.min(WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS, available),
         `remaining ${remaining} ms → ${JSON.stringify(schedule)}`,
       );
-      assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS, `remaining ${remaining} ms`);
-      assert.ok(schedule.attemptTimeoutMs <= WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, `remaining ${remaining} ms`);
-      assert.ok(schedule.backoffMs.length >= 1, `remaining ${remaining} ms`);
+    }
+  });
+
+  it("the worst case always fits in the time left, with the close-out's margin to spare", () => {
+    for (const event of EVENTS) {
+      for (
+        let remaining = WEBHOOK_CLOSEOUT_MARGIN_MS + WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS;
+        remaining <= MAX_DURATION_MS;
+        remaining += 100
+      ) {
+        const schedule = webhookScheduleFor(remaining, event);
+        const where = `${event}, remaining ${remaining} ms → ${JSON.stringify(schedule)}`;
+        assert.ok(webhookWorstCaseMs(schedule) <= remaining - WEBHOOK_CLOSEOUT_MARGIN_MS, where);
+        assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS, where);
+        assert.ok(schedule.attemptTimeoutMs <= WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, where);
+        assert.ok(schedule.backoffMs.length >= 1, where);
+      }
     }
   });
 
   it("with almost nothing left, one send with what there is (never none)", () => {
-    assert.deepEqual(webhookScheduleFor(WEBHOOK_CLOSEOUT_MARGIN_MS + 8_000), {
-      backoffMs: [0],
-      attemptTimeoutMs: 8_000,
-    });
-    for (const remaining of [WEBHOOK_CLOSEOUT_MARGIN_MS, 1_000, 0, -5_000]) {
-      assert.deepEqual(webhookScheduleFor(remaining), {
+    for (const event of EVENTS) {
+      assert.deepEqual(webhookScheduleFor(WEBHOOK_CLOSEOUT_MARGIN_MS + 8_000, event), {
         backoffMs: [0],
-        attemptTimeoutMs: WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS,
+        attemptTimeoutMs: 8_000,
       });
+      for (const remaining of [WEBHOOK_CLOSEOUT_MARGIN_MS, 1_000, 0, -5_000]) {
+        assert.deepEqual(webhookScheduleFor(remaining, event), {
+          backoffMs: [0],
+          attemptTimeoutMs: WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS,
+        });
+      }
     }
   });
 

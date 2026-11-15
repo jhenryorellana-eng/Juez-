@@ -54,6 +54,12 @@ export const WEBHOOK_BACKOFF_MS: readonly number[] = [0, 2_000, 8_000];
 export const WEBHOOK_SPARE_BACKOFF_MS: readonly number[] = [...WEBHOOK_BACKOFF_MS, 30_000];
 
 /**
+ * With too little left for three sends of WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS, an
+ * `evaluation.completed` gets the first two (see webhookScheduleFor).
+ */
+export const WEBHOOK_TWO_SEND_BACKOFF_MS: readonly number[] = WEBHOOK_BACKOFF_MS.slice(0, 2);
+
+/**
  * The per-send cap when time allows: x-legal's PDF download at its 30 s limit
  * plus 15 s for the rest of its handler. A slow x-legal that is going to finish
  * is not cut. Cut at 45 s and waited 30 s, the fourth send starts 75 s after the
@@ -89,29 +95,51 @@ export function webhookWorstCaseMs({
 /** The base schedule at the short cap — 10 s + 3 × 12 s = 46 s, what the reserve has to hold. */
 export const WEBHOOK_SHORT_WORST_CASE_MS = webhookWorstCaseMs();
 
+/** The longest each send can be when `backoffMs` has to fit in `availableMs`, waits included. */
+function longestSendMs(backoffMs: readonly number[], availableMs: number): number {
+  const waits = webhookWorstCaseMs({ backoffMs, attemptTimeoutMs: 0 });
+  return Math.floor((availableMs - waits) / backoffMs.length);
+}
+
 /**
- * The schedule for a delivery that starts with `remainingMs` left before the
- * platform ends the function. Its worst case never takes more than
- * `remainingMs - WEBHOOK_CLOSEOUT_MARGIN_MS`:
+ * The schedule for a delivery of `event` that starts with `remainingMs` left
+ * before the platform ends the function. With at least 15 s left
+ * (WEBHOOK_CLOSEOUT_MARGIN_MS + WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS), its worst case
+ * never takes more than `remainingMs - WEBHOOK_CLOSEOUT_MARGIN_MS`:
  *  1. time to spare → four sends (WEBHOOK_SPARE_BACKOFF_MS), each of 45 s;
  *  2. otherwise → the three base sends, each as long as fits, up to 45 s (a
  *     normal delivery after a ~2 min generation gets the full 45 s; the
- *     budget's path, ~12-13 s);
+ *     budget's path, with CLOSEOUT_RESERVE_MS intact, ~12-13 s);
+ *  2b. an `evaluation.completed` whose three sends would each get less than
+ *     WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS → two sends (WEBHOOK_TWO_SEND_BACKOFF_MS)
+ *     if each still gets that much, or else one send with all that is left;
  *  3. not even three sends of WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS fit (the reserve
- *     was eaten before the close-out began) → one send with what is left.
- * A longer send comes before a fourth one: a cut send is what makes x-legal
- * run its chain twice, while a 5xx that outlasts 10 s is what the
- * reconciliation (/api/xlegal/status) is there for.
+ *     was eaten before the close-out began) → one send with what is left —
+ *     which, with less than 15 s left, may not fit.
+ * A longer send comes before one more: a send cut while x-legal still works on
+ * `evaluation.completed` (it downloads our PDF first) is what makes it run its
+ * chain twice, while a fast 5xx is what the reconciliation (/api/xlegal/status)
+ * is there for. `evaluation.failed` keeps its three short sends: x-legal
+ * answers it at once.
  */
-export function webhookScheduleFor(remainingMs: number): Required<WebhookSchedule> {
+export function webhookScheduleFor(
+  remainingMs: number,
+  event: XlegalWebhookPayload["event"],
+): Required<WebhookSchedule> {
   const available = remainingMs - WEBHOOK_CLOSEOUT_MARGIN_MS;
 
   const spare = { backoffMs: WEBHOOK_SPARE_BACKOFF_MS, attemptTimeoutMs: WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS };
   if (webhookWorstCaseMs(spare) <= available) return spare;
 
-  const waits = webhookWorstCaseMs({ backoffMs: WEBHOOK_BACKOFF_MS, attemptTimeoutMs: 0 });
-  const perSend = Math.floor((available - waits) / WEBHOOK_BACKOFF_MS.length);
+  const perSend = longestSendMs(WEBHOOK_BACKOFF_MS, available);
   if (perSend >= WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS) {
+    if (event === "evaluation.completed" && perSend < WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS) {
+      const perSendOfTwo = longestSendMs(WEBHOOK_TWO_SEND_BACKOFF_MS, available);
+      if (perSendOfTwo >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS) {
+        return { backoffMs: WEBHOOK_TWO_SEND_BACKOFF_MS, attemptTimeoutMs: perSendOfTwo };
+      }
+      return { backoffMs: [0], attemptTimeoutMs: Math.floor(available) };
+    }
     return {
       backoffMs: WEBHOOK_BACKOFF_MS,
       attemptTimeoutMs: Math.min(WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, perSend),
