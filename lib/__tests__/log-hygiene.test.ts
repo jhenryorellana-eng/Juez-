@@ -38,6 +38,7 @@ const FILES = [
   "lib/gemini.ts",
   "lib/gemini-uploads.ts",
   "lib/informe-pipeline.ts",
+  "lib/pro-job.ts",
   "lib/storage.ts",
 ];
 

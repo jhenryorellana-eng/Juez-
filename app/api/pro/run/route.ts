@@ -1,13 +1,7 @@
 import { NextResponse, after } from "next/server";
-import {
-  safeBlobErrorMessage,
-  storagePut,
-  storageReadJson,
-  storageDelete,
-  storageDeleteAt,
-} from "@/lib/storage";
+import { storagePut, storageReadJson, storageDeleteAt } from "@/lib/storage";
 import { safeErrorMessage } from "@/lib/safe-error";
-import { buildInformeFromFiles } from "@/lib/informe-pipeline";
+import { processProJob } from "@/lib/pro-job";
 import { getCheckoutSession, stripeConfigured } from "@/lib/stripe";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import type { ProJob, ProResult } from "@/lib/types";
@@ -109,38 +103,4 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ jobId }, { status: 202 });
-}
-
-/** Descarga los documentos, genera el informe + PDF y guarda el resultado. */
-async function processProJob(jobId: string, job: ProJob): Promise<void> {
-  let result: ProResult;
-  try {
-    const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente);
-    const pdfUrl = await storagePut(
-      `pro/informes/informe-${jobId}.pdf`,
-      pdf,
-      "application/pdf",
-    );
-
-    result = { status: "done", informe, pdfUrl, cliente: job.cliente };
-  } catch (error) {
-    // DOWNLOAD_FAILED:/UNSUPPORTED:/TOO_LARGE: carry the document's name: only the code.
-    console.error("[pro:job] error:", safeErrorMessage(error));
-    result = {
-      status: "error",
-      error:
-        "No pudimos completar tu informe. Tu pago está registrado: vuelve a intentarlo desde esta misma página o contáctanos.",
-    };
-  }
-
-  try {
-    await storagePut(`pro/results/${jobId}.json`, JSON.stringify(result), "application/json");
-  } catch (error) {
-    console.error("[pro:job] no se pudo guardar el resultado:", safeBlobErrorMessage(error));
-  }
-
-  // Privacidad: los documentos del cliente se eliminan al terminar.
-  if (result.status === "done") {
-    await storageDelete(job.files.map((f) => f.url)).catch(() => {});
-  }
 }
