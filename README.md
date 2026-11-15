@@ -123,18 +123,28 @@ Contrato v1 (resumen):
 - `POST …/sessions/{token}/consume` — consume el intento (idempotente por `jobId`; 409 sin intentos).
 - `POST {XLEGAL_API_URL}/api/webhooks/juez` — Juez entrega `evaluation.completed|failed`,
   firmado con HMAC-SHA256 del raw body en `x-juez-signature`. Cuántos envíos y cuánto
-  espera cada uno depende del tiempo que le queda a la función cuando sale el webhook
-  (`webhookScheduleFor` en `lib/xlegal.ts`; desde el 2026-11-14), siempre dejando 10 s
-  para las escrituras y borrados del cierre:
-  - **Con tiempo de sobra** (la generación dejó ≥ 230 s): cuatro envíos (0 / 2 s / 8 s /
+  espera cada uno depende del evento y del tiempo que le queda a la función cuando sale el
+  webhook (`webhookScheduleFor` en `lib/xlegal.ts`; desde el 2026-11-14), siempre dejando
+  10 s para las escrituras y borrados del cierre. Ese tiempo se mide hasta la llegada de la
+  petición + `maxDuration` **menos 3 s** (`PLATFORM_START_ALLOWANCE_MS` en
+  `lib/xlegal-job.ts`): la plataforma puede haber empezado a contar antes de la primera
+  línea del handler (un arranque en frío), y la documentación de Vercel no dice si lo cuenta.
+  - **Con tiempo de sobra** (la generación dejó ≥ 233 s): cuatro envíos (0 / 2 s / 8 s /
     30 s), 45 s cada uno.
   - **Entrega normal** (una generación de ~2 min): tres envíos (0 / 2 s / 8 s), cada uno
     tan largo como quepa, hasta 45 s; con ~2 min de generación, los 45 s enteros.
   - **Presupuesto agotado** (`TIMEOUT_BUDGET`, o un informe que estuvo listo cuando ya
-    vencía): quedan los 60 s de `CLOSEOUT_RESERVE_MS`, y los tres envíos se cortan a los
-    ~12-13 s; peor caso 46 s. Un test recorre todos los tiempos restantes, de 15 s a
-    300 s, y comprueba que el peor caso cabe.
-  - Con casi nada (la reserva se consumió antes del cierre): un solo envío con lo que quede.
+    vencía): quedan los 63 s de `CLOSEOUT_RESERVE_MS` (60 s después de la holgura), y los
+    tres envíos se cortan a los ~12-13 s: peor caso ~50 s con la reserva entera, y nunca
+    más que el tiempo restante menos 10 s. Un test recorre todos los tiempos restantes, de
+    15 s a 300 s y para los dos eventos, y comprueba esa cota.
+  - **Menos que eso** (escrituras lentas antes del webhook, o el suelo de 30 s del
+    presupuesto): `evaluation.failed` sigue con tres envíos cortos, porque x-legal lo
+    contesta al momento; `evaluation.completed` pasa a dos envíos (0 / 2 s) si cada uno
+    tiene al menos 12 s, o a uno solo con todo lo que quede: un envío cortado mientras
+    x-legal descarga el PDF es lo que duplica su cadena (abajo).
+  - Con menos de 15 s (la reserva se consumió antes del cierre): un solo envío de al menos
+    5 s, que puede no caber.
 
   Por qué 45 s: x-legal contesta `evaluation.completed` solo cuando terminó todo, y antes
   descarga el PDF con un timeout de 30 s (su handler tiene `maxDuration` 60). Con 45 s no
@@ -144,7 +154,7 @@ Contrato v1 (resumen):
   momento, y Juez olvida al cliente) o reintenta limpio. Si no caben cuatro, se prefiere
   un envío más largo a uno más: un envío cortado es lo que duplica la cadena en x-legal
   (abajo), y un 5xx de más de 10 s es lo que cubre la reconciliación.
-  Hasta el 2026-11-14 eran tres envíos de 12 s en todos los casos; antes, cuatro sin
+  Hasta el 2026-11-14 (lo que hay en `main`) eran cuatro envíos (0 / 2 s / 8 s / 30 s) sin
   tope por envío. Si fallan todos, la red es `/api/xlegal/status`.
   Tras el `200`, Juez borra el PDF (x-legal ya lo tiene) y olvida al cliente
   (ver *Retención de `xlegal/`*).
@@ -155,7 +165,9 @@ Contrato v1 (resumen):
     encuentra el evento reclamado y sin procesar, contesta `retry`, y x-legal ejecuta la
     cadena entera **dos veces** en paralelo (la línea de «Tu evaluación está lista» del
     cliente y sus avisos, por duplicado). Con 45 s por envío solo pasa con un x-legal de
-    más de 45 s; en el camino del presupuesto agotado, con uno de más de ~12 s.
+    más de 45 s; en el camino del presupuesto agotado, con uno de más de ~12 s; en un
+    `evaluation.completed` aún más tardío, con uno de más de lo que quede (al menos 12 s
+    por envío, o un único envío).
     Seguimiento en x-legal: que un reclamo **en curso** conteste `409` sin volver a
     procesar (como ya hace su idempotencia de escrituras de entrada con `in_progress`).
   - **Un resultado que x-legal sí procesó puede quedarse como no entregado.** Si se cortan
@@ -306,7 +318,9 @@ npm run dev
   un `ApiError` de Gemini (`lib/safe-error.ts`). Lo vigila `lib/__tests__/log-hygiene.test.ts`,
   que falla si alguna llamada a `console.*` (también `debug` y `trace`) de esos archivos
   usa un `message` o un `stack`, o imprime el error mismo (`error`, `err` o `e` como
-  argumento, `${error}`, `String(error)`, `{ error }`). Un envío del webhook que se cortó
+  argumento, `${error}`, `String(error)`, tras un cast como `error as Error`, o dentro
+  de un objeto o un array a cualquier profundidad: `{ error }`, `{ cause: err }`,
+  `[error]`). No ve un error que pasa por una llamada (`inspect(error)`). Un envío del webhook que se cortó
   por tiempo queda como `TimeoutError`. Una respuesta del modelo que no es JSON válido se
   convierte en `MODEL_JSON_INVALID`, sin su texto (el `SyntaxError` lo citaba), y se
   reintenta **una vez**, con su propio contador (no gasta los reintentos de un 503/429), y en

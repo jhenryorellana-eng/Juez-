@@ -402,6 +402,28 @@ $400/$650 es el modelo de negocio y se queda tal cual.
         reprocesar.
   - [ ] Seguimiento posible (no en este PR): que el cron reenvíe el webhook de los
         resultados con `webhookDelivered: false` de más de 1 h.
+- Sexta revisión (bajos de security + code), mismo PR:
+  - [x] Premium: el reintento de `MODEL_JSON_INVALID` solo ocurre si un segundo intento tan
+        largo como el primero cabe antes de que venza `/api/pro/run` (petición + 300 s − 30 s
+        para el PDF y las escrituras). Si no cabe, el job termina en el resultado de error
+        que el cliente ve y puede reintentar. `processProJob` sale de la ruta a
+        `lib/pro-job.ts` (refactor aparte, con tests de caracterización). Premium y README
+        usan thinking LOW desde v8; el README decía MEDIUM.
+  - [x] Webhook: con menos de ~56 s restantes, `evaluation.completed` pasa a dos envíos de
+        ≥ 12 s, o a uno solo con todo lo que queda; `evaluation.failed` sigue con tres cortos.
+  - [x] El deadline del job se queda 3 s antes de `maxDuration`
+        (`PLATFORM_START_ALLOWANCE_MS`, por un arranque en frío que la plataforma cuente
+        antes del handler), y `CLOSEOUT_RESERVE_MS` pasa de 60 s a 63 s para que el camino del
+        presupuesto conserve sus tres envíos de 12 s.
+  - [x] `upload-route.test.ts` se pone rojo si el log vuelve al mensaje crudo: la ruta
+        rechaza con `PATHNAME_NOT_ALLOWED:<pathname>`.
+  - [x] `log-hygiene.test.ts` ve `{ error: err }`, `{ cause: e }`, `error as Error`, `[error]`
+        y sus anidaciones.
+  - [x] README: el peor caso del camino del presupuesto es ~50 s (≤ restante − 10 s), no
+        46 s, y `main` tenía cuatro envíos sin tope (los tres de 12 s fueron un estado
+        intermedio de este PR).
+  - [ ] Seguimiento (no en este PR): un job premium que la plataforma mata a los 300 s se
+        queda en `processing` para siempre (ver el §12 del PR).
 
 ## Plan original v6 (referencia)
 Modelo (2026-07-03): demo = app actual (embebida en x-legal, gancho). Premium $50 =
