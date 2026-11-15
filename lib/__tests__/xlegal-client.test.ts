@@ -1,16 +1,22 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  WEBHOOK_ATTEMPT_TIMEOUT_MS,
   WEBHOOK_BACKOFF_MS,
-  WEBHOOK_WORST_CASE_MS,
+  WEBHOOK_CLOSEOUT_MARGIN_MS,
+  WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS,
+  WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS,
+  WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
+  WEBHOOK_SHORT_WORST_CASE_MS,
+  WEBHOOK_SPARE_BACKOFF_MS,
   consumeXlegalAttempt,
   deliverXlegalWebhook,
   fetchXlegalSession,
   isAllowedJobDocumentUrl,
+  webhookScheduleFor,
+  webhookWorstCaseMs,
   type XlegalWebhookPayload,
 } from "../xlegal";
-import { CLOSEOUT_RESERVE_MS } from "../xlegal-job";
+import { CLOSEOUT_RESERVE_MS, MAX_DURATION_MS } from "../xlegal-job";
 import { captureLogs } from "./fake-store";
 
 const JOB_ID = "0b6f1c1e-6a39-4c51-9f0c-2b1f8f4a7d10";
@@ -131,15 +137,13 @@ describe("deliverXlegalWebhook", () => {
     assert.equal(calls.length, 2);
   });
 
-  it("the worst case (every wait, every send timing out) fits in the close-out reserve, with room for its Blob writes", () => {
-    const waits = WEBHOOK_BACKOFF_MS.reduce((total, wait) => total + wait, 0);
-    assert.equal(WEBHOOK_WORST_CASE_MS, waits + WEBHOOK_BACKOFF_MS.length * WEBHOOK_ATTEMPT_TIMEOUT_MS);
-    // What else the close-out writes and deletes in that reserve (result,
-    // documents, PDF, redaction, job record, mapping): at least 10 s for it.
-    assert.ok(
-      WEBHOOK_WORST_CASE_MS + 10_000 <= CLOSEOUT_RESERVE_MS,
-      `webhook worst case ${WEBHOOK_WORST_CASE_MS} ms vs reserve ${CLOSEOUT_RESERVE_MS} ms`,
-    );
+  it("cuts each send at the schedule's timeout, and sends as many times as it has waits", { timeout: 5_000 }, async () => {
+    stubFetch(hangs);
+    const started = Date.now();
+    await captureLogs(() => deliverXlegalWebhook(FAILED, { backoffMs: [0, 1, 1, 1], attemptTimeoutMs: 40 }));
+    const elapsed = Date.now() - started;
+    assert.equal(calls.length, 4);
+    assert.ok(elapsed >= 4 * 40 - 20 && elapsed < 2_000, `${elapsed} ms`);
   });
 
   it("logs the kind of a network error, never its message", async () => {
@@ -159,6 +163,99 @@ describe("deliverXlegalWebhook", () => {
       deliverXlegalWebhook(FAILED, { backoffMs: [0], attemptTimeoutMs: 20 }),
     );
     assert.match(logs, /TimeoutError/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  The schedule, from the time the function has left                          */
+/* -------------------------------------------------------------------------- */
+
+/** Time left when the budget closes a job: the reserve, minus the failure close-out's writes before the webhook. */
+const BUDGET_PATH_REMAINING_MS = [CLOSEOUT_RESERVE_MS - 4_000, CLOSEOUT_RESERVE_MS - 1_000, CLOSEOUT_RESERVE_MS];
+
+describe("webhookScheduleFor", () => {
+  it("a normal delivery (a ~2 min generation) gets three sends long enough for x-legal's whole handler", () => {
+    // x-legal answers evaluation.completed only after its PDF download (30 s
+    // timeout) and the rest of its handler (maxDuration 60): a 12 s cut made a
+    // slow x-legal run the chain twice, or left the report here for 30 days.
+    for (const generationMs of [90_000, 120_000, 135_000]) {
+      const schedule = webhookScheduleFor(MAX_DURATION_MS - generationMs);
+      assert.deepEqual(schedule.backoffMs, WEBHOOK_BACKOFF_MS, `generation ${generationMs} ms`);
+      assert.equal(schedule.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, `generation ${generationMs} ms`);
+    }
+  });
+
+  it("a longer generation gets three sends as long as the time left allows, between the short and the long cap", () => {
+    // 200 s of generation: 100 s left → (100 − 10 margin − 10 waits) / 3.
+    const schedule = webhookScheduleFor(MAX_DURATION_MS - 200_000);
+    assert.deepEqual(schedule, { backoffMs: WEBHOOK_BACKOFF_MS, attemptTimeoutMs: 26_666 });
+  });
+
+  it("with time to spare (a quick generation), a fourth send 30 s after the third, every send at 45 s", () => {
+    const schedule = webhookScheduleFor(MAX_DURATION_MS - 40_000);
+    assert.deepEqual(schedule, {
+      backoffMs: WEBHOOK_SPARE_BACKOFF_MS,
+      attemptTimeoutMs: WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS,
+    });
+    assert.deepEqual(WEBHOOK_SPARE_BACKOFF_MS, [0, 2_000, 8_000, 30_000]);
+  });
+
+  it("the budget's path (only the reserve left) gets three short sends, of at least 12 s each", () => {
+    for (const remaining of BUDGET_PATH_REMAINING_MS) {
+      const schedule = webhookScheduleFor(remaining);
+      assert.deepEqual(schedule.backoffMs, WEBHOOK_BACKOFF_MS, `remaining ${remaining} ms`);
+      assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS, `remaining ${remaining} ms`);
+      assert.ok(schedule.attemptTimeoutMs < 14_000, `remaining ${remaining} ms: ${schedule.attemptTimeoutMs}`);
+    }
+  });
+
+  it("the worst case always fits in the time left, with the close-out's margin to spare", () => {
+    for (
+      let remaining = WEBHOOK_CLOSEOUT_MARGIN_MS + WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS;
+      remaining <= MAX_DURATION_MS;
+      remaining += 100
+    ) {
+      const schedule = webhookScheduleFor(remaining);
+      assert.ok(
+        webhookWorstCaseMs(schedule) <= remaining - WEBHOOK_CLOSEOUT_MARGIN_MS,
+        `remaining ${remaining} ms → ${JSON.stringify(schedule)}`,
+      );
+      assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS, `remaining ${remaining} ms`);
+      assert.ok(schedule.attemptTimeoutMs <= WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, `remaining ${remaining} ms`);
+      assert.ok(schedule.backoffMs.length >= 1, `remaining ${remaining} ms`);
+    }
+  });
+
+  it("with almost nothing left, one send with what there is (never none)", () => {
+    assert.deepEqual(webhookScheduleFor(WEBHOOK_CLOSEOUT_MARGIN_MS + 8_000), {
+      backoffMs: [0],
+      attemptTimeoutMs: 8_000,
+    });
+    for (const remaining of [WEBHOOK_CLOSEOUT_MARGIN_MS, 1_000, 0, -5_000]) {
+      assert.deepEqual(webhookScheduleFor(remaining), {
+        backoffMs: [0],
+        attemptTimeoutMs: WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS,
+      });
+    }
+  });
+
+  it("the reserve holds the short schedule, its margin and the failure close-out's own writes", () => {
+    // 10 s of waits + 3 × 12 s.
+    assert.equal(WEBHOOK_SHORT_WORST_CASE_MS, 46_000);
+    // closeFailedJob deletes our documents and writes the error result BEFORE
+    // the webhook: at least 4 s for those two calls.
+    assert.ok(
+      WEBHOOK_SHORT_WORST_CASE_MS + WEBHOOK_CLOSEOUT_MARGIN_MS + 4_000 <= CLOSEOUT_RESERVE_MS,
+      `short worst case ${WEBHOOK_SHORT_WORST_CASE_MS} ms + margin vs reserve ${CLOSEOUT_RESERVE_MS} ms`,
+    );
+  });
+
+  it("the long cap covers x-legal's handler, and the fourth send lands after x-legal's maxDuration", () => {
+    const XLEGAL_PDF_DOWNLOAD_TIMEOUT_MS = 30_000; // safeFetch in applyEvaluationCompleted
+    const XLEGAL_WEBHOOK_MAX_DURATION_MS = 60_000; // maxDuration of src/app/api/webhooks/juez
+    assert.ok(WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS >= XLEGAL_PDF_DOWNLOAD_TIMEOUT_MS + 15_000);
+    const lastWait = WEBHOOK_SPARE_BACKOFF_MS[WEBHOOK_SPARE_BACKOFF_MS.length - 1];
+    assert.ok(WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS + lastWait > XLEGAL_WEBHOOK_MAX_DURATION_MS);
   });
 });
 

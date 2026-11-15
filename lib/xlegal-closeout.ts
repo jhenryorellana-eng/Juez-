@@ -20,6 +20,8 @@ import {
   jobPath,
   resultPath,
   tokenMapPath,
+  webhookScheduleFor,
+  type WebhookSchedule,
   type XlegalWebhookPayload,
 } from "./xlegal";
 import type {
@@ -39,8 +41,8 @@ export interface CloseoutDeps {
    * so a copy of the client's files that survives is in the log, not silent.
    */
   deleteMany(urls: string[]): Promise<{ deleted: number; failed: number }>;
-  /** true only when x-legal answered 2xx. */
-  deliver(payload: XlegalWebhookPayload): Promise<boolean>;
+  /** true only when x-legal answered 2xx. The schedule comes from webhookScheduleFor. */
+  deliver(payload: XlegalWebhookPayload, schedule: WebhookSchedule): Promise<boolean>;
 }
 
 export { safeErrorMessage };
@@ -117,6 +119,25 @@ async function deleteOwnedCopies(
   }
 }
 
+/**
+ * The webhook, on a schedule computed from the time the function has left NOW,
+ * after the close-out's own writes (which may have been slow). With time to
+ * spare each send gets x-legal's whole window; on the budget's path, the short
+ * sends the reserve guarantees (lib/xlegal.ts → webhookScheduleFor).
+ */
+async function deliverInTime(
+  jobId: string,
+  payload: XlegalWebhookPayload,
+  deadline: number,
+  deps: Pick<CloseoutDeps, "deliver">,
+): Promise<boolean> {
+  const schedule = webhookScheduleFor(deadline - Date.now());
+  console.log(
+    `[xlegal:job] ${jobId} webhook ${payload.event}: up to ${schedule.backoffMs.length} sends of ${Math.round(schedule.attemptTimeoutMs / 1000)}s`,
+  );
+  return deps.deliver(payload, schedule);
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Success                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -126,6 +147,8 @@ export interface ReportInput {
   job: XlegalJob;
   token: string;
   origin: string;
+  /** When the platform ends the function (epoch ms): the request's start + maxDuration. */
+  deadline: number;
   state: JobState;
   informe: Informe;
   pdf: Buffer;
@@ -136,7 +159,7 @@ export interface ReportInput {
  * store the result → webhook → on 2xx, forget the client.
  */
 export async function deliverReport(
-  { jobId, job, token, origin, state, informe, pdf }: ReportInput,
+  { jobId, job, token, origin, deadline, state, informe, pdf }: ReportInput,
   deps: CloseoutDeps = defaultCloseoutDeps,
 ): Promise<void> {
   // The budget already closed this job (and told x-legal it failed): a PDF
@@ -194,18 +217,23 @@ export async function deliverReport(
     );
   }
 
-  const delivered = await deps.deliver({
-    event: "evaluation.completed",
-    token,
+  const delivered = await deliverInTime(
     jobId,
-    completedAt,
-    result: {
-      pdfUrl: publicPdfUrl,
-      score: informe.score,
-      nivel: informe.level,
-      headline: informe.headline,
+    {
+      event: "evaluation.completed",
+      token,
+      jobId,
+      completedAt,
+      result: {
+        pdfUrl: publicPdfUrl,
+        score: informe.score,
+        nivel: informe.level,
+        headline: informe.headline,
+      },
     },
-  });
+    deadline,
+    deps,
+  );
 
   console.log(
     `[xlegal:job] ${jobId} webhook ${delivered ? "delivered" : "FAILED (reconciliation pending)"}`,
@@ -398,6 +426,8 @@ export interface FailureInput {
   token: string;
   /** What x-legal stores and shows (lib/xlegal-job.ts → errorCode). */
   code: string;
+  /** When the platform ends the function (epoch ms): the request's start + maxDuration. */
+  deadline: number;
 }
 
 /**
@@ -419,7 +449,7 @@ export interface FailureInput {
  * and the 30-day sweep removes it.
  */
 export async function closeFailedJob(
-  { jobId, job, token, code }: FailureInput,
+  { jobId, job, token, code, deadline }: FailureInput,
   deps: CloseoutDeps = defaultCloseoutDeps,
 ): Promise<void> {
   // Privacy: client documents never outlive the job, even on failure — nor a
@@ -433,12 +463,12 @@ export async function closeFailedJob(
       console.error(`[xlegal:job] ${jobId} could not store the error result:`, safeErrorMessage(error));
       return false;
     });
-  const delivered = await deps.deliver({
-    event: "evaluation.failed",
-    token,
+  const delivered = await deliverInTime(
     jobId,
-    error: code,
-  });
+    { event: "evaluation.failed", token, jobId, error: code },
+    deadline,
+    deps,
+  );
   if (stored && delivered) {
     await forgetJobRecord(jobId, deps);
     console.log(`[xlegal:job] ${jobId} failed job forgotten`);

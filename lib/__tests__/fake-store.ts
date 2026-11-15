@@ -6,7 +6,7 @@
 import type { CloseoutDeps } from "../xlegal-closeout";
 import type { PurgeDeps } from "../xlegal-purge";
 import type { StoredObject } from "../storage";
-import type { XlegalWebhookPayload } from "../xlegal";
+import type { WebhookSchedule, XlegalWebhookPayload } from "../xlegal";
 
 const HOST = "https://store.public.blob.vercel-storage.com/";
 
@@ -18,6 +18,8 @@ interface Entry {
 export class FakeStore implements CloseoutDeps, PurgeDeps {
   readonly objects = new Map<string, Entry>();
   readonly webhooks: XlegalWebhookPayload[] = [];
+  /** The schedule each webhook was handed (same order as `webhooks`). */
+  readonly schedules: Array<WebhookSchedule | undefined> = [];
   readonly putCalls: string[] = [];
   readonly listCalls: string[] = [];
   /** Return true to make that put throw. `attempt` counts puts to the same pathname, from 1. */
@@ -77,8 +79,9 @@ export class FakeStore implements CloseoutDeps, PurgeDeps {
     this.objects.delete(pathname);
   };
 
-  deliver = async (payload: XlegalWebhookPayload): Promise<boolean> => {
+  deliver = async (payload: XlegalWebhookPayload, schedule?: WebhookSchedule): Promise<boolean> => {
     this.webhooks.push(payload);
+    this.schedules.push(schedule);
     return this.webhookOk(payload);
   };
 

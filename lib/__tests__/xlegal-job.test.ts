@@ -1,8 +1,15 @@
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { processXlegalJob, type JobDeps } from "../xlegal-job";
+import { CLOSEOUT_RESERVE_MS, MAX_DURATION_MS, processXlegalJob, type JobDeps } from "../xlegal-job";
 import { informePdfPath } from "../xlegal-closeout";
-import { jobPath, resultPath, tokenMapPath } from "../xlegal";
+import {
+  WEBHOOK_BACKOFF_MS,
+  WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS,
+  WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
+  jobPath,
+  resultPath,
+  tokenMapPath,
+} from "../xlegal";
 import type { Informe, XlegalJob } from "../types";
 import { FakeStore, captureLogs } from "./fake-store";
 
@@ -32,8 +39,8 @@ beforeEach(() => {
   store.seed(tokenMapPath(TOKEN_HASH), { jobId: JOB_ID });
 });
 
-function run(deps: Partial<JobDeps> = {}) {
-  return processXlegalJob(JOB_ID, job, TOKEN, "https://juez.example", Date.now(), {
+function run(deps: Partial<JobDeps> = {}, requestStartedAt = Date.now()) {
+  return processXlegalJob(JOB_ID, job, TOKEN, "https://juez.example", requestStartedAt, {
     generate: async () => ({ informe: INFORME, pdf: Buffer.from("%PDF") }),
     closeout: store,
     budgetMs: 60_000,
@@ -112,5 +119,22 @@ describe("processXlegalJob", () => {
     const logs = await captureLogs(() => run());
     assert.doesNotMatch(logs, /score|\b72\b/);
     assert.doesNotMatch(logs, /Cliente Demo|demo@e2e\.local|Honduras/);
+  });
+
+  it("a report ready with time to spare is delivered with sends long enough for x-legal (the deadline is the request's start + maxDuration)", async () => {
+    // The request arrived 120 s ago (a ~2 min generation): 180 s left of its 300 s.
+    await captureLogs(() => run({}, Date.now() - 120_000));
+    assert.deepEqual(store.schedules[0]?.backoffMs, WEBHOOK_BACKOFF_MS);
+    assert.equal(store.schedules[0]?.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS);
+  });
+
+  it("TIMEOUT_BUDGET: with only the reserve left, the evaluation.failed goes on the short sends", async () => {
+    // The request arrived so long ago that only CLOSEOUT_RESERVE_MS is left when the budget fires.
+    await captureLogs(() =>
+      run({ budgetMs: 10, generate: () => new Promise(() => {}) }, Date.now() - (MAX_DURATION_MS - CLOSEOUT_RESERVE_MS)),
+    );
+    assert.equal(store.webhooks[0].error, "TIMEOUT_BUDGET");
+    const timeout = store.schedules[0]?.attemptTimeoutMs ?? 0;
+    assert.ok(timeout >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS - 100 && timeout < 14_000, String(timeout));
   });
 });

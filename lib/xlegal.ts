@@ -18,31 +18,114 @@ import type { XlegalJob, XlegalResult, XlegalSession } from "./types";
 /** Opaque bearer token issued by x-legal (never logged, never stored in clear). */
 const TOKEN_RE = /^[A-Za-z0-9_-]{20,128}$/;
 
-/**
- * Webhook retry waits (ms): first send + 2 retries = 3 sends. Until 2026-11-14
- * it was 4 sends (2 s / 8 s / 30 s) with no timeout per send, so a hung x-legal
- * could hold the close-out past the platform's limit — and on the budget's path
- * only CLOSEOUT_RESERVE_MS (60 s) is left. The send that went is the one after
- * the 30 s wait: a webhook that fails three times is what /api/xlegal/status
- * reconciles.
+/*
+ * The webhook's schedule: how many sends, how long each may take, and how long
+ * to wait between them. Since 2026-11-14 it is computed from the time the
+ * function has left (webhookScheduleFor), not fixed.
+ *
+ * What it has to live with, on x-legal's side (src/app/api/webhooks/juez):
+ *  - x-legal answers `evaluation.completed` only once ALL its work is done: it
+ *    downloads our PDF (safeFetch, 30 s timeout), stores it, updates the
+ *    evaluation and runs the phase close-out inline. Its handler has
+ *    maxDuration 60; past that, its platform kills it.
+ *  - A send we cut while x-legal is still working does NOT stop it, and the
+ *    retry then finds the event claimed but not processed: claimWebhookEvent
+ *    answers "retry" and x-legal runs the whole chain a SECOND time, in parallel.
+ *  - If every send is cut but x-legal did finish, x-legal has the report and we
+ *    think it was not delivered: the full result and the PDF stay in our store
+ *    until the 30-day sweep (x-legal's reconciler only polls in_progress rows).
+ * So a send should not be cut before x-legal can answer — but on the budget's
+ * path only CLOSEOUT_RESERVE_MS (60 s) is left for the whole close-out, and a
+ * delivery that outlasts the function writes nothing at all.
  */
+
+/** The three sends of the base schedule: first send + retries after 2 s and 8 s. */
 export const WEBHOOK_BACKOFF_MS: readonly number[] = [0, 2_000, 8_000];
 
 /**
- * Each send gives up after this long. x-legal answers `evaluation.completed`
- * only once it has downloaded and stored our PDF (a report, not a scan), and
- * `evaluation.failed` right away.
+ * With time to spare, a fourth send 30 s after the third. Until 2026-11-14
+ * every delivery had it, with no timeout per send; now only a schedule whose
+ * four sends all get the long cap does. It covers a 5xx that lasts up to ~40 s
+ * instead of ~10 s, and it lands after any earlier send has ended on x-legal's
+ * side (see WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS): it either finds the event
+ * processed (`duplicate` → 200 at once, and the client is forgotten) or retries
+ * cleanly.
  */
-export const WEBHOOK_ATTEMPT_TIMEOUT_MS = 12_000;
+export const WEBHOOK_SPARE_BACKOFF_MS: readonly number[] = [...WEBHOOK_BACKOFF_MS, 30_000];
 
 /**
- * The longest a delivery can take: every wait, and every send timing out —
- * 10 s + 3 × 12 s = 46 s. It has to fit in CLOSEOUT_RESERVE_MS (lib/xlegal-job.ts)
- * with room left for the close-out's Blob writes and deletes (a test holds it).
+ * The per-send cap when time allows: x-legal's PDF download at its 30 s limit
+ * plus 15 s for the rest of its handler. A slow x-legal that is going to finish
+ * is not cut. Cut at 45 s and waited 30 s, the fourth send starts 75 s after the
+ * third — past x-legal's 60 s maxDuration.
  */
-export const WEBHOOK_WORST_CASE_MS =
-  WEBHOOK_BACKOFF_MS.reduce((total, wait) => total + wait, 0) +
-  WEBHOOK_BACKOFF_MS.length * WEBHOOK_ATTEMPT_TIMEOUT_MS;
+export const WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS = 45_000;
+
+/**
+ * What each of the three sends is guaranteed on the budget's path: with
+ * CLOSEOUT_RESERVE_MS intact, the schedule leaves every send at least this long
+ * (a test holds it). x-legal answers `evaluation.failed` right away.
+ */
+export const WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS = 12_000;
+
+/** Below this a send is pointless: the schedule falls back to a single send. */
+export const WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS = 5_000;
+
+/**
+ * Kept free after the webhook, for what the close-out does once x-legal
+ * answers: delete the PDF, redact the result (up to three writes and a delete),
+ * delete the token mapping and the job record.
+ */
+export const WEBHOOK_CLOSEOUT_MARGIN_MS = 10_000;
+
+/** The longest a delivery on this schedule can take: every wait, and every send timing out. */
+export function webhookWorstCaseMs({
+  backoffMs = WEBHOOK_BACKOFF_MS,
+  attemptTimeoutMs = WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
+}: WebhookSchedule = {}): number {
+  return backoffMs.reduce((total, wait) => total + wait, 0) + backoffMs.length * attemptTimeoutMs;
+}
+
+/** The base schedule at the short cap — 10 s + 3 × 12 s = 46 s, what the reserve has to hold. */
+export const WEBHOOK_SHORT_WORST_CASE_MS = webhookWorstCaseMs();
+
+/**
+ * The schedule for a delivery that starts with `remainingMs` left before the
+ * platform ends the function. Its worst case never takes more than
+ * `remainingMs - WEBHOOK_CLOSEOUT_MARGIN_MS`:
+ *  1. time to spare → four sends (WEBHOOK_SPARE_BACKOFF_MS), each of 45 s;
+ *  2. otherwise → the three base sends, each as long as fits, up to 45 s (a
+ *     normal delivery after a ~2 min generation gets the full 45 s; the
+ *     budget's path, ~12-13 s);
+ *  3. not even three sends of WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS fit (the reserve
+ *     was eaten before the close-out began) → one send with what is left.
+ * A longer send comes before a fourth one: a cut send is what makes x-legal
+ * run its chain twice, while a 5xx that outlasts 10 s is what the
+ * reconciliation (/api/xlegal/status) is there for.
+ */
+export function webhookScheduleFor(remainingMs: number): Required<WebhookSchedule> {
+  const available = remainingMs - WEBHOOK_CLOSEOUT_MARGIN_MS;
+
+  const spare = { backoffMs: WEBHOOK_SPARE_BACKOFF_MS, attemptTimeoutMs: WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS };
+  if (webhookWorstCaseMs(spare) <= available) return spare;
+
+  const waits = webhookWorstCaseMs({ backoffMs: WEBHOOK_BACKOFF_MS, attemptTimeoutMs: 0 });
+  const perSend = Math.floor((available - waits) / WEBHOOK_BACKOFF_MS.length);
+  if (perSend >= WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS) {
+    return {
+      backoffMs: WEBHOOK_BACKOFF_MS,
+      attemptTimeoutMs: Math.min(WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS, perSend),
+    };
+  }
+
+  // Never no send at all: with less than the minimum left it may not fit, and
+  // the platform may end the function first — but a send that might land beats
+  // a job that ends with no webhook.
+  return {
+    backoffMs: [0],
+    attemptTimeoutMs: Math.max(WEBHOOK_MIN_ATTEMPT_TIMEOUT_MS, Math.floor(available)),
+  };
+}
 
 export function xlegalConfigured(): boolean {
   return Boolean(
@@ -188,7 +271,7 @@ export interface XlegalWebhookPayload {
   error?: string;
 }
 
-/** Overrides of the delivery schedule (tests). */
+/** A delivery schedule: the wait before each send (its length is the number of sends), and each send's timeout. */
 export interface WebhookSchedule {
   backoffMs?: readonly number[];
   attemptTimeoutMs?: number;
@@ -196,15 +279,16 @@ export interface WebhookSchedule {
 
 /**
  * POST /api/webhooks/juez on x-legal, signed with HMAC-SHA256 over the exact
- * raw body sent. Retries with 2 s / 8 s backoff (3 sends total), and each send
- * gives up after WEBHOOK_ATTEMPT_TIMEOUT_MS: at worst WEBHOOK_WORST_CASE_MS.
+ * raw body sent, on the given schedule (webhookScheduleFor; the close-out
+ * computes it from the time left). Without one, the base schedule at the short
+ * cap: 3 sends after 0 / 2 / 8 s, 12 s each, at worst WEBHOOK_SHORT_WORST_CASE_MS.
  * Returns true only when x-legal answered 2xx.
  */
 export async function deliverXlegalWebhook(
   payload: XlegalWebhookPayload,
   {
     backoffMs = WEBHOOK_BACKOFF_MS,
-    attemptTimeoutMs = WEBHOOK_ATTEMPT_TIMEOUT_MS,
+    attemptTimeoutMs = WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
   }: WebhookSchedule = {},
 ): Promise<boolean> {
   const raw = JSON.stringify(payload);

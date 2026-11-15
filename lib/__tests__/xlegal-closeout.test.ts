@@ -9,7 +9,17 @@ import {
   pollWithoutJob,
   type JobState,
 } from "../xlegal-closeout";
-import { jobPath, resultPath, tokenMapPath } from "../xlegal";
+import {
+  WEBHOOK_BACKOFF_MS,
+  WEBHOOK_CLOSEOUT_MARGIN_MS,
+  WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS,
+  WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
+  jobPath,
+  resultPath,
+  tokenMapPath,
+  webhookWorstCaseMs,
+} from "../xlegal";
+import { CLOSEOUT_RESERVE_MS } from "../xlegal-job";
 import type { Informe, XlegalJob, XlegalResult } from "../types";
 import { FakeStore, captureLogs } from "./fake-store";
 
@@ -20,6 +30,8 @@ const TOKEN_HASH = "f".repeat(64);
 const CLIENT = { nombre: "Cliente Demo E2E", email: "demo@e2e.local", pais: "Honduras" };
 const FOREIGN_DOC = "https://abc.supabase.co/storage/v1/object/sign/docs/1.pdf?token=x";
 const INFORME = { score: 72, level: "medio", headline: "Caso con base" } as unknown as Informe;
+/** When the platform ends the function: far enough that the time left never decides a test that is not about it. */
+const FAR_DEADLINE = () => Date.now() + 300_000;
 
 let store: FakeStore;
 let job: XlegalJob;
@@ -43,13 +55,14 @@ beforeEach(() => {
   store.seed(tokenMapPath(TOKEN_HASH), { jobId: JOB_ID });
 });
 
-function report(state: JobState = { closed: false }) {
+function report(state: JobState = { closed: false }, deadline = FAR_DEADLINE()) {
   return deliverReport(
     {
       jobId: JOB_ID,
       job,
       token: TOKEN,
       origin: "https://juez.example",
+      deadline,
       state,
       informe: INFORME,
       pdf: Buffer.from("%PDF"),
@@ -316,7 +329,7 @@ describe("deliverReport", () => {
 
 describe("closeFailedJob", () => {
   const fail = () =>
-    closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET" }, store);
+    closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET", deadline: FAR_DEADLINE() }, store);
 
   it("delivered: keeps only { status, error } and deletes the job record and our documents", async () => {
     await fail();
@@ -411,7 +424,7 @@ describe('a server-to-server job (source "api")', () => {
   });
 
   it("the failure deletes none of the documents it lists", async () => {
-    await closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET" }, store);
+    await closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET", deadline: FAR_DEADLINE() }, store);
     assert.equal(store.has(informePdfPath(OTHER_JOB_ID)), true);
     assert.equal(store.has(`xlegal/docs/${OTHER_JOB_ID}/0-doc.pdf`), true);
     assert.equal(store.webhooks[0].event, "evaluation.failed");
@@ -503,5 +516,58 @@ describe("pollAnswerWithoutJob", () => {
       }),
       "not-found",
     );
+  });
+});
+
+describe("the webhook's schedule, from the time the function has left", () => {
+  it("a report delivered with time to spare gives each send x-legal's whole window (45 s)", async () => {
+    // ~2 min of generation out of 300 s: 170 s left.
+    await report({ closed: false }, Date.now() + 170_000);
+    assert.equal(store.schedules.length, 1);
+    assert.deepEqual(store.schedules[0]?.backoffMs, WEBHOOK_BACKOFF_MS);
+    assert.equal(store.schedules[0]?.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS);
+  });
+
+  it("a report delivered late gets a schedule that still fits before the deadline", async () => {
+    const deadline = Date.now() + 40_000;
+    await report({ closed: false }, deadline);
+    const schedule = store.schedules[0];
+    assert.ok(schedule?.attemptTimeoutMs !== undefined && schedule.attemptTimeoutMs < WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS);
+    assert.ok(webhookWorstCaseMs(schedule) <= 40_000 - WEBHOOK_CLOSEOUT_MARGIN_MS);
+  });
+
+  it("a job the budget closed (only the reserve left) gets the short sends", async () => {
+    await closeFailedJob(
+      { jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET", deadline: Date.now() + CLOSEOUT_RESERVE_MS },
+      store,
+    );
+    const schedule = store.schedules[0];
+    assert.deepEqual(schedule?.backoffMs, WEBHOOK_BACKOFF_MS);
+    assert.ok(schedule?.attemptTimeoutMs !== undefined);
+    assert.ok(schedule.attemptTimeoutMs >= WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS && schedule.attemptTimeoutMs < 14_000);
+  });
+
+  it("an early failure (time to spare) is not held to the short sends either", async () => {
+    await closeFailedJob(
+      { jobId: JOB_ID, job, token: TOKEN, code: "DOWNLOAD_FAILED", deadline: Date.now() + 280_000 },
+      store,
+    );
+    assert.equal(store.schedules[0]?.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS);
+  });
+
+  it("the time left is measured when the webhook goes, after the close-out's own writes", async () => {
+    // A slow Blob before the webhook eats into the time the webhook has.
+    store.onPut = (pathname) => {
+      if (pathname === resultPath(JOB_ID)) {
+        const until = Date.now() + 60;
+        while (Date.now() < until) {
+          // busy-wait: the result write takes 60 ms
+        }
+      }
+    };
+    const deadline = Date.now() + WEBHOOK_CLOSEOUT_MARGIN_MS + 30_050;
+    await closeFailedJob({ jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET", deadline }, store);
+    // 30 050 ms after the margin when the close-out began; < 30 000 ms when the webhook went.
+    assert.ok(webhookWorstCaseMs(store.schedules[0]) < 30_000, JSON.stringify(store.schedules[0]));
   });
 });

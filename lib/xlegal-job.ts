@@ -27,13 +27,15 @@ import type { Informe, XlegalJob } from "./types";
 export const MAX_DURATION_MS = 300_000;
 
 /**
- * Held back so the job can always close itself: the webhook at its worst
- * (WEBHOOK_WORST_CASE_MS in lib/xlegal.ts: 3 sends that each time out at 12 s,
- * plus 2 s and 8 s of backoff = 46 s) and the close-out's Blob writes and
- * deletes in the 14 s left. A test fails if the webhook stops fitting. A job the
- * platform kills mid-flight writes NOTHING — no result, no webhook — and that
- * silence is what wedges the client on a job that will never finish. A budget
- * that leaves no room to report its own expiry is no budget at all.
+ * Held back so the job can always close itself: when the budget fires, this is
+ * what is left, and the webhook's schedule is computed from it (webhookScheduleFor
+ * in lib/xlegal.ts: three sends of at least 12 s each, 46 s at worst), plus
+ * WEBHOOK_CLOSEOUT_MARGIN_MS for the Blob writes and deletes after it and a few
+ * seconds for the ones before. A test fails if the short schedule stops fitting.
+ * A delivery with time to spare gets longer sends; this reserve is the floor. A
+ * job the platform kills mid-flight writes NOTHING — no result, no webhook — and
+ * that silence is what wedges the client on a job that will never finish. A
+ * budget that leaves no room to report its own expiry is no budget at all.
  */
 export const CLOSEOUT_RESERVE_MS = 60_000;
 
@@ -99,6 +101,9 @@ export async function processXlegalJob(
 ): Promise<void> {
   const state: JobState = { closed: false };
   const budgetMs = deps.budgetMs ?? jobBudgetMs(requestStartedAt);
+  // What the close-out measures its webhook's schedule against: past it, the
+  // platform ends the function, whatever is still running.
+  const deadline = requestStartedAt + MAX_DURATION_MS;
   console.log(`[xlegal:job] ${jobId} budget ${Math.round(budgetMs / 1000)}s`);
 
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -111,7 +116,7 @@ export async function processXlegalJob(
   // budget exists to guarantee. So the work carries its own catch: it re-throws
   // only while it still owns the outcome, and swallows a late failure once the
   // budget has already closed the job.
-  const work = generateAndDeliver(jobId, job, token, origin, state, deps).catch(
+  const work = generateAndDeliver(jobId, job, token, origin, deadline, state, deps).catch(
     (error: unknown) => {
       if (!state.closed) throw error;
       console.error(
@@ -144,7 +149,7 @@ export async function processXlegalJob(
       `[xlegal:job] generation failed (${jobId}): ${code} —`,
       safeErrorMessage(error),
     );
-    await closeFailedJob({ jobId, job, token, code }, deps.closeout);
+    await closeFailedJob({ jobId, job, token, code, deadline }, deps.closeout);
   } finally {
     clearTimeout(budgetTimer);
   }
@@ -156,6 +161,7 @@ async function generateAndDeliver(
   job: XlegalJob,
   token: string,
   origin: string,
+  deadline: number,
   state: JobState,
   deps: JobDeps,
 ): Promise<void> {
@@ -165,7 +171,7 @@ async function generateAndDeliver(
   const { informe, pdf } = await deps.generate(job);
   // No score: the evaluation of a person x-legal can identify does not stay in our logs either.
   console.log(`[xlegal:job] ${jobId} informe+pdf ready`);
-  await deliverReport({ jobId, job, token, origin, state, informe, pdf }, deps.closeout);
+  await deliverReport({ jobId, job, token, origin, deadline, state, informe, pdf }, deps.closeout);
 }
 
 export function resolveOrigin(request: Request): string {
