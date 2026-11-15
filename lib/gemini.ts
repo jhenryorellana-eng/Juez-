@@ -73,20 +73,36 @@ export function parseModelJson<T>(text: string | undefined): T {
   }
 }
 
+/** One call to the model: what generateJsonWith retries (client.models.generateContent, or a stub in tests). */
+export type GenerateContent = (request: {
+  model: string;
+  contents: ContentListUnion;
+  config: Record<string, unknown>;
+}) => Promise<{ text?: string }>;
+
 /** Llama al modelo pidiendo JSON y lo parsea, con reintentos ante errores transitorios. */
-async function generateJson<T>({ model, contents, config, retries = 2 }: GenParams): Promise<T> {
+async function generateJson<T>(params: GenParams): Promise<T> {
   const client = getClient();
   if (!client) throw new Error("NO_API_KEY");
+  // An arrow, not `client.models.generateContent` on its own: detached, it loses `this`.
+  return generateJsonWith<T>((request) => client.models.generateContent(request), params);
+}
 
+/** generateJson's retry loop, with the model call and the wait injectable (tests). */
+export async function generateJsonWith<T>(
+  generate: GenerateContent,
+  { model, contents, config, retries = 2 }: GenParams,
+  wait: (ms: number) => Promise<void> = sleep,
+): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const response = await client.models.generateContent({ model, contents, config });
+      const response = await generate({ model, contents, config });
       return parseModelJson<T>(response.text);
     } catch (err) {
       lastErr = err;
       if (attempt < retries && isRetryable(err)) {
-        await sleep(700 * (attempt + 1));
+        await wait(700 * (attempt + 1));
         continue;
       }
       throw err;
