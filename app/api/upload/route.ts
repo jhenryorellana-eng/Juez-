@@ -46,8 +46,12 @@ export async function POST(request: Request) {
       // Tokens only for the folders the browser uploads to: without this, anyone
       // could write any pathname of the production store (e.g. a fake purge
       // marker or a file under xlegal/results/<jobId>.json/).
+      // The refused pathname travels as the error's detail, like
+      // UNSAFE_PATH:<pathname> in lib/storage.ts: what is kept of it is decided
+      // in one place, the log line below (only the code), and
+      // upload-route.test.ts fails if that line ever prints the raw message.
       onBeforeGenerateToken: async (pathname) => {
-        if (!isAllowedUploadPathname(pathname)) throw new Error("PATHNAME_NOT_ALLOWED");
+        if (!isAllowedUploadPathname(pathname)) throw new Error(`PATHNAME_NOT_ALLOWED:${pathname}`);
         return {
           allowedContentTypes: [
             "application/pdf",
