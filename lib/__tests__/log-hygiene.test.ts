@@ -7,7 +7,11 @@
  *  - an argument that uses a `message` or a `stack` — `error.message`,
  *    `(error as Error).message`, or a local `message` that holds one;
  *  - the error itself — a bare `error`, `err` or `e` argument, `${error}`,
- *    `String(error)` or `{ error }` — which prints its message (and its stack).
+ *    `String(error)`, behind parentheses or a cast (`error as Error`), or held
+ *    by an object or array literal at any depth (`{ error }`, `{ cause: err }`,
+ *    `[error]`, `[{ error: e }]`) — which prints its message (and its stack).
+ * What it does not see: an error passed through a call (`inspect(error)`,
+ * `JSON.stringify({ error })`), or picked by a ternary inside an object.
  * The way to log an error is safeErrorMessage(error) (lib/safe-error.ts), or
  * safeBlobErrorMessage for a Blob call (lib/storage.ts).
  */
@@ -131,12 +135,67 @@ const BARE_ERROR = new RegExp(
 /** `{ error }`, `{ jobId, err }`: shorthand that puts the whole error in an object. */
 const SHORTHAND_ERROR = new RegExp(`[{,]\\s*${ERROR_NAME}\\s*[,}]`);
 
+/** The index of the bracket that closes the one at `open`, or -1 (string literals are already blanked). */
+function closingIndex(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    if ("([{".includes(text[i])) depth += 1;
+    if (")]}".includes(text[i]) && (depth -= 1) === 0) return i;
+  }
+  return -1;
+}
+
+/** Strips what does not change the value printed: wrapping parentheses, `as T` casts, a non-null `!`. */
+function unwrap(expression: string): string {
+  let current = expression.trim();
+  for (;;) {
+    let next = current;
+    if (next.startsWith("(") && closingIndex(next, 0) === next.length - 1) next = next.slice(1, -1).trim();
+    next = next.replace(/\s+as\s+[\w$.<>[\]|&\s]+$/, "").replace(/!$/, "").trim();
+    if (next === current) return current;
+    current = next;
+  }
+}
+
+/** The index of the first `:` at depth 0 of an object member (`key: value`), or -1. */
+function memberColon(member: string): number {
+  let depth = 0;
+  for (let i = 0; i < member.length; i += 1) {
+    if ("([{".includes(member[i])) depth += 1;
+    if (")]}".includes(member[i])) depth -= 1;
+    if (member[i] === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Whether an expression is the error itself (BARE_ERROR, behind any parentheses
+ * or cast), or an object or array literal that holds it at any depth —
+ * `{ error: err }`, `{ cause: e }`, `[error]`, `[{ error: e }]` — which prints
+ * it all the same (console formats what it is handed, message and stack).
+ */
+function holdsError(expression: string): boolean {
+  const value = unwrap(expression);
+  if (BARE_ERROR.test(value)) return true;
+  const isObject = value.startsWith("{") && closingIndex(value, 0) === value.length - 1;
+  const isArray = value.startsWith("[") && closingIndex(value, 0) === value.length - 1;
+  if (!isObject && !isArray) return false;
+  return topLevelArguments(value.slice(1, -1)).some((member) => {
+    const spread = member.replace(/^\.\.\./, "");
+    if (isArray) return holdsError(spread);
+    const colon = memberColon(spread);
+    return holdsError(colon >= 0 ? spread.slice(colon + 1) : spread);
+  });
+}
+
 /** Why a console call's arguments would print an error's text, or null if they would not. */
 function rawErrorIn(args: string): string | null {
   if (/\b(?:message|stack)\b/.test(args)) return "uses a message or a stack";
   for (const argument of topLevelArguments(args)) {
-    if (BARE_ERROR.test(argument)) return `logs the error itself (${argument})`;
-    if (SHORTHAND_ERROR.test(argument)) return `puts the error in an object (${argument})`;
+    if (BARE_ERROR.test(unwrap(argument))) return `logs the error itself (${argument})`;
+    if (SHORTHAND_ERROR.test(argument) || holdsError(argument)) {
+      return `puts the error in an object or an array (${argument})`;
+    }
   }
   return null;
 }
@@ -173,6 +232,28 @@ describe("log hygiene", () => {
     );
   });
 
+  it("finds the error as an object's value, inside an array, or behind a cast", () => {
+    const source = [
+      'console.error("[x] failed", { error: err });',
+      'console.error("[x] failed", { jobId, cause: e });',
+      'console.error("[x] failed", { "error": error, jobId });',
+      'console.error("[x] failed", { detail: { cause: err } });',
+      "console.error(error as Error);",
+      'console.error("[x] failed:", (err as Error));',
+      'console.error("[x] failed:", e as unknown as Error);',
+      'console.error("[x] failed", { error: error as Error });',
+      'console.error("[x] failed:", [error]);',
+      'console.warn("[x] failed:", [jobId, err]);',
+      'console.error("[x] failed:", [{ error: e }]);',
+    ].join("\n");
+    const calls = consoleCallArguments(source);
+    assert.equal(calls.length, 11);
+    assert.deepEqual(
+      calls.filter((args) => rawErrorIn(args) === null),
+      [],
+    );
+  });
+
   it("also reads console.debug and console.trace", () => {
     const source = [
       'console.debug("[x] failed:", error);',
@@ -190,6 +271,10 @@ describe("log hygiene", () => {
       "console.error(`[x] ${jobId} failed: ${errorCode(error)}`);",
       'console.error("[x] failed", { error: "TIMEOUT_BUDGET", errors: 2 });',
       'console.log("[x] the error was logged elsewhere", jobId, elapsed);',
+      'console.error("[x] failed", { error: safeErrorMessage(err), jobId });',
+      'console.error("[x] failed", { code: errorCode(error) as string, sends: [0, 2_000] });',
+      'console.log("[x] schedule", [jobId, elapsed], { e2e: true });',
+      'console.error("[x] failed:", safeErrorMessage(error as Error));',
     ].join("\n");
     assert.deepEqual(
       consoleCallArguments(source).filter((args) => rawErrorIn(args) !== null),
