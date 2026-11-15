@@ -1,5 +1,7 @@
 /**
- * The x-legal evaluation job: generate → store → webhook → clean up.
+ * The x-legal evaluation job: generate → store → webhook → clean up. This file
+ * races the generation against its budget; how the job ends (what is stored,
+ * delivered and forgotten) lives in lib/xlegal-closeout.ts.
  *
  * Shared by the two ways a job can start:
  *  - POST /api/xlegal/run  — the embedded page (/xlegal), authenticated by the
@@ -10,22 +12,50 @@
  * Both write the same job/result files (lib/xlegal.ts), so /api/xlegal/status
  * and the webhook work the same whichever way the job started.
  */
-import { storagePut, storageDelete, isOwnedStorageUrl } from "./storage";
 import { buildInformeFromFiles } from "./informe-pipeline";
-import { deliverXlegalWebhook, resultPath } from "./xlegal";
-import type { XlegalJob, XlegalResult } from "./types";
+import {
+  closeFailedJob,
+  defaultCloseoutDeps,
+  deliverReport,
+  safeErrorMessage,
+  type CloseoutDeps,
+  type JobState,
+} from "./xlegal-closeout";
+import type { Informe, XlegalJob } from "./types";
 
 /** `maxDuration` of the routes that start a job, in ms. The clock starts when the REQUEST arrives. */
 export const MAX_DURATION_MS = 300_000;
 
 /**
- * Held back so the job can always close itself: writing the result plus up to
- * ~40 s of webhook backoff. A job the platform kills mid-flight writes NOTHING —
- * no result, no webhook — and that silence is what wedges the client on a job
- * that will never finish. A budget that leaves no room to report its own expiry
- * is no budget at all.
+ * How much earlier than our `requestStartedAt` the platform may have started
+ * its maxDuration clock: requestStartedAt is Date.now() at the top of the
+ * handler, and a cold start (booting the function, loading the modules) comes
+ * before it. Vercel's documentation does not say whether that time counts
+ * (looked up 2026-11-14), and it is not measured here; a cold start of a Node
+ * function is usually well under this. Without it, the close-out's only slack
+ * was WEBHOOK_CLOSEOUT_MARGIN_MS, which is sized for the Blob calls after the
+ * webhook (up to ~8 requests) — a slow Blob and a long cold start together
+ * left none, and a function that dies between x-legal's 2xx and
+ * forgetDeliveredJob keeps the job record and the full result for 30 days.
+ * So the job's deadline stops this short of maxDuration.
  */
-const CLOSEOUT_RESERVE_MS = 60_000;
+export const PLATFORM_START_ALLOWANCE_MS = 3_000;
+
+/**
+ * Held back so the job can always close itself: when the budget fires, this
+ * minus PLATFORM_START_ALLOWANCE_MS is what the close-out sees as left, and the
+ * webhook's schedule is computed from it (webhookScheduleFor in lib/xlegal.ts:
+ * three sends of at least 12 s each, so ≤ 10 s + 3 × 13.3 s = 50 s at worst
+ * with the reserve intact, and never more than the time left minus 10 s), plus
+ * WEBHOOK_CLOSEOUT_MARGIN_MS for the Blob writes and deletes after it and a few
+ * seconds for the ones before. A test fails if the short schedule stops
+ * fitting. A delivery with time to spare gets longer sends; this reserve is the
+ * floor. A job the platform kills mid-flight writes NOTHING — no result, no
+ * webhook — and that silence is what wedges the client on a job that will
+ * never finish. A budget that leaves no room to report its own expiry is no
+ * budget at all. (60 s until 2026-11-14; +3 s for PLATFORM_START_ALLOWANCE_MS.)
+ */
+export const CLOSEOUT_RESERVE_MS = 63_000;
 
 /** Floor: below this a generation is hopeless anyway, so fail fast and clean. */
 const MIN_BUDGET_MS = 30_000;
@@ -58,24 +88,29 @@ function errorCode(error: unknown): string {
     "UNSUPPORTED",
     "EMPTY",
     "NO_API_KEY",
+    "MODEL_JSON_INVALID",
   ];
   return known.find((code) => message.startsWith(code)) ?? "GENERATION_FAILED";
 }
 
-/**
- * The files this app may delete once the job is over: only its OWN copies. A
- * server-to-server job reads the documents straight from x-legal's storage
- * through short-lived signed URLs; those are not ours to delete (and Vercel
- * Blob's `del()` would only fail on them).
- */
-function ownedUrls(urls: string[]): string[] {
-  return urls.filter(isOwnedStorageUrl);
+/** What the job talks to — injectable so the race with the budget can be tested without Gemini or Blob. */
+export interface JobDeps {
+  /** Downloads the documents, generates the report and renders its PDF. */
+  generate(job: XlegalJob): Promise<{ informe: Informe; pdf: Buffer }>;
+  closeout: CloseoutDeps;
+  /** Overrides jobBudgetMs (tests). */
+  budgetMs?: number;
 }
 
-/** Shared latch so only ONE of the two racers writes the job's outcome. */
-interface JobState {
-  closed: boolean;
-}
+const defaultJobDeps: JobDeps = {
+  // Variante sin bloques comerciales: este cliente ya contrató el reforzamiento
+  // en x-legal, así que el informe no le vende precios ni revisión de abogado.
+  // No deadline for the model's retry: the race with the job's budget below
+  // bounds the generation, and closes it as TIMEOUT_BUDGET in time.
+  generate: (job) =>
+    buildInformeFromFiles(job.files, job.cliente, { variant: "xlegal", deadline: undefined }),
+  closeout: defaultCloseoutDeps,
+};
 
 export async function processXlegalJob(
   jobId: string,
@@ -83,9 +118,14 @@ export async function processXlegalJob(
   token: string,
   origin: string,
   requestStartedAt: number,
+  deps: JobDeps = defaultJobDeps,
 ): Promise<void> {
   const state: JobState = { closed: false };
-  const budgetMs = jobBudgetMs(requestStartedAt);
+  const budgetMs = deps.budgetMs ?? jobBudgetMs(requestStartedAt);
+  // What the close-out measures its webhook's schedule against: past it, the
+  // platform ends the function, whatever is still running — perhaps up to
+  // PLATFORM_START_ALLOWANCE_MS before our clock says so.
+  const deadline = requestStartedAt + MAX_DURATION_MS - PLATFORM_START_ALLOWANCE_MS;
   console.log(`[xlegal:job] ${jobId} budget ${Math.round(budgetMs / 1000)}s`);
 
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -98,12 +138,12 @@ export async function processXlegalJob(
   // budget exists to guarantee. So the work carries its own catch: it re-throws
   // only while it still owns the outcome, and swallows a late failure once the
   // budget has already closed the job.
-  const work = generateAndDeliver(jobId, job, token, origin, state).catch(
+  const work = generateAndDeliver(jobId, job, token, origin, deadline, state, deps).catch(
     (error: unknown) => {
       if (!state.closed) throw error;
       console.error(
         `[xlegal:job] ${jobId} failed after the budget already closed it:`,
-        (error as Error).message,
+        safeErrorMessage(error),
       );
     },
   );
@@ -113,107 +153,47 @@ export async function processXlegalJob(
     // runs out and we close the job ourselves while the function is still alive.
     await Promise.race([work, budget]);
   } catch (error) {
-    // The work already wrote a successful outcome and the budget merely lost the
-    // race afterwards — nothing to report.
-    if (state.closed) return;
+    // The report was ready and claimed (deliverReport set state.closed) when the
+    // budget fired: the close-out is running — webhook, then forgetting the
+    // client. Returning now would end the after() callback, and the platform may
+    // freeze the instance before the documents, the PDF and the job record are
+    // deleted. Wait for it: this is what CLOSEOUT_RESERVE_MS is for, and `work`
+    // never rejects once state.closed is set (its catch absorbs it).
+    if (state.closed) {
+      await work;
+      return;
+    }
     state.closed = true;
 
     const code = errorCode(error);
+    // safeErrorMessage: a `CODE:detail` message often carries a document name.
     console.error(
       `[xlegal:job] generation failed (${jobId}): ${code} —`,
-      (error as Error).message,
+      safeErrorMessage(error),
     );
-    const result: XlegalResult = { status: "error", error: code };
-    await storagePut(resultPath(jobId), JSON.stringify(result), "application/json").catch(
-      () => {},
-    );
-    await deliverXlegalWebhook({
-      event: "evaluation.failed",
-      token,
-      jobId,
-      error: code,
-    });
-    // Privacy: client documents never outlive the job, even on failure.
-    await storageDelete(ownedUrls(job.files.map((f) => f.url))).catch(() => {});
+    await closeFailedJob({ jobId, job, token, code, deadline }, deps.closeout);
   } finally {
     clearTimeout(budgetTimer);
   }
 }
 
-/** The happy path: generate → store → webhook → clean up. */
+/** The happy path: generate, then hand the report to the close-out. */
 async function generateAndDeliver(
   jobId: string,
   job: XlegalJob,
   token: string,
   origin: string,
+  deadline: number,
   state: JobState,
+  deps: JobDeps,
 ): Promise<void> {
   // Checkpoint logs: if the background task gets killed mid-flight, the last
   // line in the Vercel logs tells us exactly which stage died.
   console.log(`[xlegal:job] ${jobId} start (${job.files.length} docs, ${job.source ?? "page"})`);
-  // Variante sin bloques comerciales: este cliente ya contrató el reforzamiento
-  // en x-legal, así que el informe no le vende precios ni revisión de abogado.
-  const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente, {
-    variant: "xlegal",
-  });
-  console.log(`[xlegal:job] ${jobId} informe+pdf ready (score ${informe.score})`);
-
-  // Local-dev storage returns a relative URL; the webhook consumer (x-legal
-  // or the mock) needs an absolute one to download the PDF.
-  const storedPdfUrl = await storagePut(
-    `xlegal/informes/informe-${jobId}.pdf`,
-    pdf,
-    "application/pdf",
-  );
-  console.log(`[xlegal:job] ${jobId} pdf stored`);
-  const publicPdfUrl = storedPdfUrl.startsWith("/")
-    ? `${origin}${storedPdfUrl}`
-    : storedPdfUrl;
-
-  const completedAt = new Date().toISOString();
-  const result: Extract<XlegalResult, { status: "done" }> = {
-    status: "done",
-    informe,
-    pdfUrl: publicPdfUrl,
-    cliente: job.cliente,
-    completedAt,
-    webhookDelivered: false,
-  };
-  // Claim the outcome before writing it: a budget timeout that fires from here
-  // on must not bury a report that is genuinely ready.
-  if (state.closed) return;
-  state.closed = true;
-  await storagePut(resultPath(jobId), JSON.stringify(result), "application/json");
-  console.log(`[xlegal:job] ${jobId} result saved, delivering webhook`);
-
-  const delivered = await deliverXlegalWebhook({
-    event: "evaluation.completed",
-    token,
-    jobId,
-    completedAt,
-    result: {
-      pdfUrl: publicPdfUrl,
-      score: informe.score,
-      nivel: informe.level,
-      headline: informe.headline,
-    },
-  });
-
-  console.log(`[xlegal:job] ${jobId} webhook ${delivered ? "delivered" : "FAILED (reconciliation pending)"}`);
-  if (delivered) {
-    // x-legal stored the PDF: remove our copies (the client docs we hold, if
-    // any, and the temporary PDF).
-    await storageDelete(ownedUrls([...job.files.map((f) => f.url), storedPdfUrl])).catch(
-      () => {},
-    );
-    await storagePut(
-      resultPath(jobId),
-      JSON.stringify({ ...result, webhookDelivered: true }),
-      "application/json",
-    );
-  }
-  // If every webhook attempt failed the PDF stays put: /api/xlegal/status is
-  // the reconciliation path and x-legal will pull the result from there.
+  const { informe, pdf } = await deps.generate(job);
+  // No score: the evaluation of a person x-legal can identify does not stay in our logs either.
+  console.log(`[xlegal:job] ${jobId} informe+pdf ready`);
+  await deliverReport({ jobId, job, token, origin, deadline, state, informe, pdf }, deps.closeout);
 }
 
 export function resolveOrigin(request: Request): string {

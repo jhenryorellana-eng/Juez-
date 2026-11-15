@@ -1,11 +1,7 @@
 import { NextResponse, after } from "next/server";
-import {
-  storagePut,
-  storageReadJson,
-  storageDelete,
-  storageDeleteAt,
-} from "@/lib/storage";
-import { buildInformeFromFiles } from "@/lib/informe-pipeline";
+import { storagePut, storageReadJson, storageDeleteAt } from "@/lib/storage";
+import { safeErrorMessage } from "@/lib/safe-error";
+import { processProJob } from "@/lib/pro-job";
 import { getCheckoutSession, stripeConfigured } from "@/lib/stripe";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import type { ProJob, ProResult } from "@/lib/types";
@@ -35,6 +31,8 @@ export async function GET(request: Request) {
 /*  POST /api/pro/run — verifica el pago y arranca (o reanuda) el análisis     */
 /* -------------------------------------------------------------------------- */
 export async function POST(request: Request) {
+  // Start of the maxDuration clock: the job in after() runs on what is left of it.
+  const requestStartedAt = Date.now();
   const limit = rateLimit(`pro-run:${getClientIp(request)}`, 10);
   if (!limit.ok) {
     return NextResponse.json(
@@ -69,7 +67,8 @@ export async function POST(request: Request) {
       }
       jobId = session.metadata?.jobId ?? "";
     } catch (error) {
-      console.error("[pro:run] stripe:", (error as Error).message);
+      // STRIPE_ERROR: <message>: Stripe's message can quote the request (the email).
+      console.error("[pro:run] stripe:", safeErrorMessage(error));
       return NextResponse.json(
         { error: "No pudimos verificar el pago." },
         { status: 502 },
@@ -102,41 +101,8 @@ export async function POST(request: Request) {
       JSON.stringify({ ...job, status: "processing" satisfies ProJob["status"] }),
       "application/json",
     );
-    after(() => processProJob(jobId, job));
+    after(() => processProJob(jobId, job, requestStartedAt));
   }
 
   return NextResponse.json({ jobId }, { status: 202 });
-}
-
-/** Descarga los documentos, genera el informe + PDF y guarda el resultado. */
-async function processProJob(jobId: string, job: ProJob): Promise<void> {
-  let result: ProResult;
-  try {
-    const { informe, pdf } = await buildInformeFromFiles(job.files, job.cliente);
-    const pdfUrl = await storagePut(
-      `pro/informes/informe-${jobId}.pdf`,
-      pdf,
-      "application/pdf",
-    );
-
-    result = { status: "done", informe, pdfUrl, cliente: job.cliente };
-  } catch (error) {
-    console.error("[pro:job] error:", (error as Error).message);
-    result = {
-      status: "error",
-      error:
-        "No pudimos completar tu informe. Tu pago está registrado: vuelve a intentarlo desde esta misma página o contáctanos.",
-    };
-  }
-
-  try {
-    await storagePut(`pro/results/${jobId}.json`, JSON.stringify(result), "application/json");
-  } catch (error) {
-    console.error("[pro:job] no se pudo guardar el resultado:", (error as Error).message);
-  }
-
-  // Privacidad: los documentos del cliente se eliminan al terminar.
-  if (result.status === "done") {
-    await storageDelete(job.files.map((f) => f.url)).catch(() => {});
-  }
 }

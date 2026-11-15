@@ -9,7 +9,7 @@ import AnalyzingPanel from "@/components/AnalyzingPanel";
 import ScoreRing from "@/components/ui/ScoreRing";
 import Reveal from "@/components/ui/Reveal";
 import { DIRECT_TOTAL_BYTES } from "@/lib/analysis";
-import type { XlegalResult } from "@/lib/types";
+import type { Informe } from "@/lib/types";
 
 const FASES = [
   "Abriendo tu expediente",
@@ -23,7 +23,19 @@ const FASES_MS = 24_000;
 const POLL_MS = 5000;
 const POLL_MAX = 96; // ~8 minutes
 
-type DoneResult = Extract<XlegalResult, { status: "done" }>;
+/**
+ * What GET /api/xlegal/run answers once the report exists. The score and
+ * headline only travel until x-legal acknowledges delivery: after that, this
+ * app keeps nothing about the evaluation and the answer is just x-legal's
+ * download link.
+ */
+interface DoneResult {
+  status: "done";
+  pdfUrl?: string;
+  informe?: Pick<Informe, "score" | "level" | "headline">;
+}
+
+type PollAnswer = DoneResult | { status: "error" } | { status?: undefined };
 
 interface Props {
   token: string;
@@ -97,7 +109,7 @@ export default function XlegalFlow({
           { cache: "no-store" },
         );
         if (res.status !== 202) {
-          const data = (await res.json().catch(() => null)) as XlegalResult | null;
+          const data = (await res.json().catch(() => null)) as PollAnswer | null;
           if (data?.status === "done") {
             setResult(data);
             setView("done");
@@ -345,7 +357,7 @@ function DoneView({
           Tu evaluación está lista{nombre ? `, ${primerNombre(nombre)}` : ""}
         </h1>
 
-        {result ? (
+        {result?.informe ? (
           <>
             <div className="mt-6">
               <ScoreRing value={result.informe.score} level={result.informe.level} />

@@ -10,7 +10,9 @@ import {
   resultPath,
 } from "@/lib/xlegal";
 import { processXlegalJob, resolveOrigin } from "@/lib/xlegal-job";
+import { runPurgeIfDue } from "@/lib/xlegal-purge";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { safeErrorMessage } from "@/lib/safe-error";
 import { ACCEPTED_EXTENSIONS, MAX_FILES } from "@/lib/analysis";
 import type { ClienteInfo, XlegalJob, XlegalResult } from "@/lib/types";
 
@@ -42,8 +44,10 @@ const str = (v: unknown, max: number): string => (typeof v === "string" ? v.trim
  * - Auth: header `x-api-key` = XLEGAL_API_KEY (the shared secret /status uses).
  * - Idempotent by `jobId`: a retry of the same job answers 202 without starting
  *   a second generation (x-legal's queue retries on network errors).
- * - Documents are read through short-lived signed Supabase URLs, never copied
- *   into our storage, and never deleted from here (they are not ours).
+ * - Documents are read through short-lived signed Supabase URLs — the only
+ *   URLs accepted (isAllowedJobDocumentUrl: our own Blob is refused) — never
+ *   copied into our storage, and never deleted from here (they are not ours:
+ *   the close-out skips the documents of a `source: "api"` job).
  */
 export async function POST(request: Request) {
   const requestStartedAt = Date.now();
@@ -116,10 +120,12 @@ export async function POST(request: Request) {
   // Idempotency: this jobId already started (or finished) — nothing to do.
   const existingResult = await storageReadJson<XlegalResult>(resultPath(jobId));
   if (existingResult) {
+    scheduleRetentionSweep();
     return NextResponse.json({ jobId, status: existingResult.status }, { status: 202 });
   }
   const existingJob = await storageReadJson<XlegalJob>(jobPath(jobId));
   if (existingJob) {
+    scheduleRetentionSweep();
     return NextResponse.json({ jobId, status: existingJob.status }, { status: 202 });
   }
 
@@ -134,11 +140,26 @@ export async function POST(request: Request) {
   try {
     await storagePut(jobPath(jobId), JSON.stringify(job), "application/json");
   } catch (error) {
-    console.error(`[xlegal:jobs] ${jobId} could not be stored:`, (error as Error).message);
+    console.error(`[xlegal:jobs] ${jobId} could not be stored:`, safeErrorMessage(error));
     return NextResponse.json({ error: "Could not start the job." }, { status: 500 });
   }
 
   const origin = resolveOrigin(request);
   after(() => processXlegalJob(jobId, job, token, origin, requestStartedAt));
+  scheduleRetentionSweep();
   return NextResponse.json({ jobId, status: "processing" }, { status: 202 });
+}
+
+/**
+ * Safety net for the daily cron (GET /api/xlegal/purge): an accepted request
+ * also sweeps `xlegal/` in the background, at most once every 24 h — the marker
+ * in the store decides (lib/xlegal-purge.ts). It needs no secret beyond the
+ * x-api-key this request already proved, never delays the 202 (after() runs
+ * once the response is sent), and runs alongside the evaluation, not before it.
+ * Because it shares this invocation's 300 s with the evaluation, it deletes at
+ * most MAX_OPPORTUNISTIC_DELETES objects and reads no results; the cron is the
+ * real sweep, and it needs CRON_SECRET.
+ */
+function scheduleRetentionSweep(): void {
+  after(() => runPurgeIfDue("jobs"));
 }

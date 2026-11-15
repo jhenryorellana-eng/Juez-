@@ -1,6 +1,8 @@
 import { GoogleGenAI, Type, ThinkingLevel, FileState } from "@google/genai";
 import type { Schema, ContentListUnion, Part } from "@google/genai";
 import type { Verdict, Informe, ClienteInfo, InformeVariant } from "./types";
+import { GeminiUploads } from "./gemini-uploads";
+import { safeErrorMessage } from "./safe-error";
 import {
   buildEvaluationSystemPrompt,
   buildEvaluationUserPrompt,
@@ -50,28 +52,121 @@ interface GenParams {
   contents: ContentListUnion;
   config: Record<string, unknown>;
   retries?: number;
+  /**
+   * When the caller's handler ends (epoch ms), minus what it still needs after
+   * the model answers; undefined = no limit. Required, not optional, so that a
+   * caller that forgets to pass its deadline on is a type error.
+   */
+  deadline: number | undefined;
 }
 
+/**
+ * Parses the model's JSON answer. A SyntaxError would quote the answer itself —
+ * the evaluation of an identifiable person — and its message reaches the logs
+ * (and, for the demo, the fallback's console.error): so it becomes a bare code,
+ * with neither the text nor the original error attached.
+ *
+ * A missing or blank answer is invalid too. It used to become `{}`, typed as a
+ * Verdict or an Informe, which then failed later and far from the cause (the
+ * PDF, the webhook's score) — or not at all.
+ */
+export function parseModelJson<T>(text: string | undefined): T {
+  if (!text?.trim()) throw new Error("MODEL_JSON_INVALID");
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error("MODEL_JSON_INVALID");
+  }
+}
+
+/** One call to the model: what generateJsonWith retries (client.models.generateContent, or a stub in tests). */
+export type GenerateContent = (request: {
+  model: string;
+  contents: ContentListUnion;
+  config: Record<string, unknown>;
+}) => Promise<{ text?: string }>;
+
 /** Llama al modelo pidiendo JSON y lo parsea, con reintentos ante errores transitorios. */
-async function generateJson<T>({ model, contents, config, retries = 2 }: GenParams): Promise<T> {
+async function generateJson<T>(params: GenParams): Promise<T> {
   const client = getClient();
   if (!client) throw new Error("NO_API_KEY");
+  // An arrow, not `client.models.generateContent` on its own: detached, it loses `this`.
+  return generateJsonWith<T>((request) => client.models.generateContent(request), params);
+}
 
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+/**
+ * How many times an answer that is not JSON (MODEL_JSON_INVALID) is retried. A
+ * blank or cut answer is usually transient — the output cut at MAX_TOKENS after
+ * the thinking, a hiccup of the service — so one more try often succeeds, and
+ * failing the job on the first one ended a paid report (premium, /xlegal) that a
+ * retry would have saved. Only one: a model that answers garbage twice in a row
+ * is not having a hiccup.
+ *
+ * And only if it fits (GenParams.deadline): every try of a report is a full
+ * generation (minutes on a large case file, even with LOW thinking). The
+ * premium job (/api/pro/run, maxDuration 300) has no budget of its own: a
+ * retry that outlasted the function would be killed with it, and a killed job
+ * writes no result — the client who paid would be left on «processing» for
+ * good, where the error result tells them to retry. On /xlegal the job's own
+ * budget closes it as TIMEOUT_BUDGET first, so it passes no deadline here.
+ */
+const INVALID_JSON_RETRIES = 1;
+
+/** The pause before that retry. */
+const INVALID_JSON_RETRY_WAIT_MS = 700;
+
+/**
+ * Whether a second try of the same request fits before `deadline`, assuming it
+ * takes as long as the try that just failed: there is no better estimate of a
+ * generation over the same documents than the one that just ran.
+ */
+function retryFits(deadline: number | undefined, attemptMs: number, now: () => number): boolean {
+  return deadline === undefined || now() + INVALID_JSON_RETRY_WAIT_MS + attemptMs <= deadline;
+}
+
+/**
+ * generateJson's retry loop, with the model call, the wait and the clock
+ * injectable (tests).
+ *
+ * Two separate counters: `retries` more tries on a transient error of the
+ * provider (503/429…, isRetryable), and INVALID_JSON_RETRIES on an answer that
+ * is not JSON. Neither spends the other's: a bad answer is not an overloaded
+ * model, and the fallback to MODELS.judgeFallback still hangs on isRetryable.
+ */
+export async function generateJsonWith<T>(
+  generate: GenerateContent,
+  { model, contents, config, retries = 2, deadline }: GenParams,
+  wait: (ms: number) => Promise<void> = sleep,
+  now: () => number = Date.now,
+): Promise<T> {
+  let transientRetries = 0;
+  let invalidJsonRetries = 0;
+  for (;;) {
+    const attemptStartedAt = now();
     try {
-      const response = await client.models.generateContent({ model, contents, config });
-      return JSON.parse(response.text ?? "{}") as T;
+      const response = await generate({ model, contents, config });
+      return parseModelJson<T>(response.text);
     } catch (err) {
-      lastErr = err;
-      if (attempt < retries && isRetryable(err)) {
-        await sleep(700 * (attempt + 1));
+      if (isInvalidJson(err) && invalidJsonRetries < INVALID_JSON_RETRIES) {
+        if (retryFits(deadline, now() - attemptStartedAt, now)) {
+          invalidJsonRetries += 1;
+          await wait(INVALID_JSON_RETRY_WAIT_MS);
+          continue;
+        }
+        console.error("[gemini] MODEL_JSON_INVALID not retried: a second try would end past the deadline");
+      }
+      if (isRetryable(err) && transientRetries < retries) {
+        transientRetries += 1;
+        await wait(700 * transientRetries);
         continue;
       }
       throw err;
     }
   }
-  throw lastErr;
+}
+
+function isInvalidJson(err: unknown): boolean {
+  return err instanceof Error && err.message === "MODEL_JSON_INVALID";
 }
 
 const VERDICT_SCHEMA: Schema = {
@@ -118,16 +213,34 @@ export type PreparedDoc =
   | { kind: "pdf"; name: string; buffer: Buffer }
   | { kind: "text"; name: string; text: string };
 
+/**
+ * Deletes one file from the Files API (GeminiUploads logs a failure, never
+ * throws it, and aborts the request after DELETE_TIMEOUT_MS).
+ */
+async function deleteGeminiFile(name: string, signal: AbortSignal): Promise<void> {
+  const client = getClient();
+  if (!client) return;
+  await client.files.delete({ name, config: { abortSignal: signal } });
+}
+
 /** Sube un PDF grande a la Files API de Gemini y espera a que esté ACTIVO. */
-async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
+async function uploadPdfToGemini(
+  name: string,
+  buffer: Buffer,
+  uploads: GeminiUploads,
+): Promise<Part> {
   const client = getClient();
   if (!client) throw new Error("NO_API_KEY");
 
   const blob = new Blob([new Uint8Array(buffer)], { type: "application/pdf" });
-  let file = await client.files.upload({
-    file: blob,
-    config: { mimeType: "application/pdf", displayName: name },
-  });
+  // Tracked from the moment the upload returns, before waiting for ACTIVE: a
+  // file that never activates still exists on Google's side and must go too.
+  let file = await uploads.upload(() =>
+    client.files.upload({
+      file: blob,
+      config: { mimeType: "application/pdf", displayName: name },
+    }),
+  );
 
   const deadline = Date.now() + 150_000;
   while (file.state === FileState.PROCESSING && Date.now() < deadline) {
@@ -135,13 +248,15 @@ async function uploadPdfToGemini(name: string, buffer: Buffer): Promise<Part> {
     file = await client.files.get({ name: file.name ?? "" });
   }
   if (file.state !== FileState.ACTIVE || !file.uri) {
-    throw new Error(`FILE_NOT_ACTIVE:${name}`);
+    // Code only: the document's name usually carries the client's, and the
+    // message ends up in the logs (lib/xlegal-job.ts).
+    throw new Error("FILE_NOT_ACTIVE");
   }
   return { fileData: { fileUri: file.uri, mimeType: "application/pdf" } };
 }
 
 /** Convierte los documentos en partes del mensaje (inline, Files API o texto). */
-async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
+async function buildParts(docs: PreparedDoc[], uploads: GeminiUploads): Promise<Part[]> {
   // Paso 1 — decidir qué viaja inline. El presupuesto de 14 MB se reparte en
   // orden de documento, así que esta decisión tiene que seguir siendo secuencial.
   let inlineBudget = INLINE_TOTAL_LIMIT;
@@ -171,18 +286,35 @@ async function buildParts(docs: PreparedDoc[]): Promise<Part[]> {
           },
         ];
       }
-      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer)];
+      return [{ text: header }, await uploadPdfToGemini(doc.name, doc.buffer, uploads)];
     }),
   );
   return parts.flat();
 }
 
 /**
+ * Runs one evaluation and deletes whatever it uploaded to the Files API, however
+ * it ends — success, model error, or a failed upload.
+ */
+async function withGeminiUploads<T>(run: (uploads: GeminiUploads) => Promise<T>): Promise<T> {
+  const uploads = new GeminiUploads(deleteGeminiFile);
+  try {
+    return await run(uploads);
+  } finally {
+    await uploads.release();
+  }
+}
+
+/**
  * Evalúa el caso a partir de 1-10 documentos.
  * Usa gemini-3.5-flash; si está sobrecargado, cae a gemini-3.1-flash-lite.
  */
-export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
-  const parts = await buildParts(docs);
+export function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
+  return withGeminiUploads((uploads) => runEvaluation(docs, uploads));
+}
+
+async function runEvaluation(docs: PreparedDoc[], uploads: GeminiUploads): Promise<Verdict> {
+  const parts = await buildParts(docs, uploads);
   const contents: ContentListUnion = [
     ...parts,
     { text: buildEvaluationUserPrompt(docs.length) },
@@ -203,6 +335,9 @@ export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 2,
+      // No deadline: an evaluation at LOW takes well under a minute, and its
+      // route's maxDuration (300 s) holds both tries.
+      deadline: undefined,
     });
     return normalizeVerdict(verdict);
   } catch (err) {
@@ -212,6 +347,7 @@ export async function evaluateCase(docs: PreparedDoc[]): Promise<Verdict> {
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
       retries: 1,
+      deadline: undefined,
     });
     return normalizeVerdict(verdict);
   }
@@ -290,7 +426,8 @@ export async function researchCountryCases(pais: string): Promise<CountryResearc
         await sleep(900);
         continue;
       }
-      console.error("[gemini:research] búsqueda fallida:", (err as Error).message);
+      // safeErrorMessage: an ApiError's message may quote the request, which names the country.
+      console.error("[gemini:research] búsqueda fallida:", safeErrorMessage(err));
       return null;
     }
   }
@@ -424,12 +561,23 @@ function buildInformeSchema(variant: InformeVariant): Schema {
  * mantiene en LOW porque MEDIUM costaba minutos por documento y un expediente
  * voluminoso agotaba el presupuesto entero sin llegar a producir nada.
  */
-export async function generateInforme(
+export function generateInforme(
   docs: PreparedDoc[],
   cliente: ClienteInfo,
-  variant: InformeVariant = "pro",
+  variant: InformeVariant,
+  { deadline }: { deadline: number | undefined },
 ): Promise<Informe> {
-  const parts = await buildParts(docs);
+  return withGeminiUploads((uploads) => runInforme(docs, cliente, variant, deadline, uploads));
+}
+
+async function runInforme(
+  docs: PreparedDoc[],
+  cliente: ClienteInfo,
+  variant: InformeVariant,
+  deadline: number | undefined,
+  uploads: GeminiUploads,
+): Promise<Informe> {
+  const parts = await buildParts(docs, uploads);
   const contents: ContentListUnion = [
     ...parts,
     { text: buildEvaluationUserPrompt(docs.length) },
@@ -463,6 +611,7 @@ export async function generateInforme(
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
       retries: 1,
+      deadline,
     });
     return normalizeInforme(informe, research?.fuentes ?? [], variant);
   } catch (err) {
@@ -472,6 +621,7 @@ export async function generateInforme(
       contents,
       config: { ...baseConfig, thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
       retries: 1,
+      deadline,
     });
     return normalizeInforme(informe, research?.fuentes ?? [], variant);
   }

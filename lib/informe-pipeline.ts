@@ -17,13 +17,15 @@ export interface FileRef {
 
 /**
  * Downloads the documents, generates the Informe and renders its PDF.
- * The variant defaults to "pro" so every existing caller keeps its behaviour:
- * only /api/xlegal/run asks for the report without the commercial blocks.
+ * The variant defaults to "pro": only the x-legal job asks for the report
+ * without the commercial blocks. `deadline` is when the caller's handler ends,
+ * minus what it needs after this returns (generateJson retries an invalid
+ * answer only if a second try fits before it); undefined = no limit.
  */
 export async function buildInformeFromFiles(
   files: FileRef[],
   cliente: ClienteInfo,
-  { variant = "pro" }: { variant?: InformeVariant } = {},
+  { variant = "pro", deadline }: { variant?: InformeVariant; deadline: number | undefined },
 ): Promise<{ informe: Informe; pdf: Buffer }> {
   // Concurrent on purpose: downloading up to 10 documents one after another was
   // pure dead time, and with a large case file it ate into the job budget before
@@ -37,7 +39,7 @@ export async function buildInformeFromFiles(
     }),
   );
 
-  const informe = await generateInforme(docs, cliente, variant);
+  const informe = await generateInforme(docs, cliente, variant, { deadline });
   const pdf = await renderInformePdf(
     cliente,
     informe,

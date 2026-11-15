@@ -5,6 +5,8 @@ import { prepareDoc, totalContentLength } from "@/lib/docs";
 import { buildDemoVerdict } from "@/lib/demo";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
 import { MAX_FILE_BYTES, MAX_FILE_MB, MAX_FILES } from "@/lib/analysis";
+import { isDemoUploadedDocUrl } from "@/lib/storage-paths";
+import { safeErrorMessage } from "@/lib/safe-error";
 import type { VerdictResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -42,7 +44,7 @@ export async function GET(request: Request) {
     await del(blobs[0].url).catch(() => {});
     return NextResponse.json(result);
   } catch (error) {
-    console.error("[evaluate:get] error:", (error as Error).message);
+    console.error("[evaluate:get] error:", safeErrorMessage(error));
     return NextResponse.json({ status: "pending" }, { status: 202 });
   }
 }
@@ -123,14 +125,11 @@ async function handleBlobJob(request: Request): Promise<NextResponse> {
       { status: 400 },
     );
   }
+  // Only what the browser uploaded to casos/: processJob deletes these refs when
+  // it is done, so any other blob of the store (xlegal/, a result, pro/) is not
+  // the caller's to name.
   for (const ref of refs) {
-    let host: string;
-    try {
-      host = new URL(ref.url).hostname;
-    } catch {
-      return NextResponse.json({ error: "URL de archivo inválida." }, { status: 400 });
-    }
-    if (!host.endsWith(".blob.vercel-storage.com")) {
+    if (!isDemoUploadedDocUrl(ref.url)) {
       return NextResponse.json({ error: "URL de archivo no permitida." }, { status: 400 });
     }
   }
@@ -155,7 +154,9 @@ async function processJob(jobId: string, refs: BlobFileRef[]): Promise<void> {
     result = { status: "done", verdict: await runEvaluation(docs, totalContentLength(docs)) };
   } catch (error) {
     const message = (error as Error).message ?? "";
-    console.error("[evaluate:job] error:", message);
+    // Only the code: `DOWNLOAD_FAILED:<name>` and friends carry the file's name,
+    // and the demo (embedded in ContyGo's /admin/demo) may get real clients' files.
+    console.error("[evaluate:job] error:", safeErrorMessage(error));
     result = {
       status: "error",
       error: message.startsWith("UNSUPPORTED:")
@@ -171,7 +172,7 @@ async function processJob(jobId: string, refs: BlobFileRef[]): Promise<void> {
       addRandomSuffix: false,
     });
   } catch (error) {
-    console.error("[evaluate:job] no se pudo guardar el resultado:", (error as Error).message);
+    console.error("[evaluate:job] no se pudo guardar el resultado:", safeErrorMessage(error));
   }
 
   // Privacidad: los documentos subidos se borran al terminar.
@@ -186,7 +187,7 @@ async function runEvaluation(
   try {
     return { ...(await evaluateCase(docs)) };
   } catch (error) {
-    console.error("[evaluate] fallback por:", (error as Error).message);
+    console.error("[evaluate] fallback por:", safeErrorMessage(error));
     return { ...buildDemoVerdict(totalLength), demo: true };
   }
 }
@@ -213,7 +214,7 @@ function docError(error: unknown): NextResponse {
       { status: 413 },
     );
   }
-  console.error("[evaluate] error leyendo archivos:", message);
+  console.error("[evaluate] error leyendo archivos:", safeErrorMessage(error));
   return NextResponse.json(
     { error: "No pudimos leer los archivos. Revisa que no estén dañados." },
     { status: 422 },

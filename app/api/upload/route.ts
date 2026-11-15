@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { MAX_FILE_BYTES } from "@/lib/analysis";
 import { getClientIp, rateLimit } from "@/lib/ratelimit";
+import { safeBlobErrorMessage } from "@/lib/storage";
+import { isAllowedUploadPathname } from "@/lib/storage-paths";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,21 +43,33 @@ export async function POST(request: Request) {
     const result = await handleUpload({
       body,
       request,
-      onBeforeGenerateToken: async () => ({
-        allowedContentTypes: [
-          "application/pdf",
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-          "text/plain",
-        ],
-        maximumSizeInBytes: MAX_FILE_BYTES,
-        addRandomSuffix: true,
-      }),
+      // Tokens only for the folders the browser uploads to: without this, anyone
+      // could write any pathname of the production store (e.g. a fake purge
+      // marker or a file under xlegal/results/<jobId>.json/).
+      // The refused pathname travels as the error's detail, like
+      // UNSAFE_PATH:<pathname> in lib/storage.ts: what is kept of it is decided
+      // in one place, the log line below (only the code), and
+      // upload-route.test.ts fails if that line ever prints the raw message.
+      onBeforeGenerateToken: async (pathname) => {
+        if (!isAllowedUploadPathname(pathname)) throw new Error(`PATHNAME_NOT_ALLOWED:${pathname}`);
+        return {
+          allowedContentTypes: [
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/plain",
+          ],
+          maximumSizeInBytes: MAX_FILE_BYTES,
+          addRandomSuffix: true,
+        };
+      },
       // El procesamiento ocurre en /api/evaluate; aquí no hay nada que hacer.
       onUploadCompleted: async () => {},
     });
     return NextResponse.json(result);
   } catch (error) {
-    console.error("[upload] error:", (error as Error).message);
+    // Only a code or the SDK's fixed sentence: a message built from the request
+    // could quote the pathname, which carries the client's file name.
+    console.error("[upload] error:", safeBlobErrorMessage(error));
     return NextResponse.json(
       { error: "No se pudo autorizar la subida del archivo." },
       { status: 400 },
