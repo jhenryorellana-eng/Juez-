@@ -1,11 +1,20 @@
 import { beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { CLOSEOUT_RESERVE_MS, MAX_DURATION_MS, processXlegalJob, type JobDeps } from "../xlegal-job";
+import {
+  CLOSEOUT_RESERVE_MS,
+  MAX_DURATION_MS,
+  PLATFORM_START_ALLOWANCE_MS,
+  processXlegalJob,
+  type JobDeps,
+} from "../xlegal-job";
 import { informePdfPath } from "../xlegal-closeout";
 import {
   WEBHOOK_BACKOFF_MS,
+  WEBHOOK_CLOSEOUT_MARGIN_MS,
   WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS,
   WEBHOOK_SHORT_ATTEMPT_TIMEOUT_MS,
+  WEBHOOK_SPARE_BACKOFF_MS,
+  webhookWorstCaseMs,
   jobPath,
   resultPath,
   tokenMapPath,
@@ -126,6 +135,19 @@ describe("processXlegalJob", () => {
     await captureLogs(() => run({}, Date.now() - 120_000));
     assert.deepEqual(store.schedules[0]?.backoffMs, WEBHOOK_BACKOFF_MS);
     assert.equal(store.schedules[0]?.attemptTimeoutMs, WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS);
+  });
+
+  it("measures its deadline PLATFORM_START_ALLOWANCE_MS short of the request's start + maxDuration", async () => {
+    // requestStartedAt is Date.now() at the top of the handler; the platform may
+    // have started its maxDuration clock before that (a cold start). Here, by
+    // our clock, there is 1 s more than the four 45 s sends need: with the
+    // allowance there is not, and the delivery gets the three base sends.
+    const spareNeedMs =
+      webhookWorstCaseMs({ backoffMs: WEBHOOK_SPARE_BACKOFF_MS, attemptTimeoutMs: WEBHOOK_LONG_ATTEMPT_TIMEOUT_MS }) +
+      WEBHOOK_CLOSEOUT_MARGIN_MS;
+    await captureLogs(() => run({}, Date.now() - (MAX_DURATION_MS - spareNeedMs - 1_000)));
+    assert.ok(PLATFORM_START_ALLOWANCE_MS > 1_000);
+    assert.deepEqual(store.schedules[0]?.backoffMs, WEBHOOK_BACKOFF_MS);
   });
 
   it("TIMEOUT_BUDGET: with only the reserve left, the evaluation.failed goes on the short sends", async () => {

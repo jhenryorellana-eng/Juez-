@@ -35,7 +35,8 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{20,128}$/;
  *    think it was not delivered: the full result and the PDF stay in our store
  *    until the 30-day sweep (x-legal's reconciler only polls in_progress rows).
  * So a send should not be cut before x-legal can answer — but on the budget's
- * path only CLOSEOUT_RESERVE_MS (60 s) is left for the whole close-out, and a
+ * path only CLOSEOUT_RESERVE_MS (63 s, of which the job's deadline already
+ * keeps PLATFORM_START_ALLOWANCE_MS) is left for the whole close-out, and a
  * delivery that outlasts the function writes nothing at all.
  */
 

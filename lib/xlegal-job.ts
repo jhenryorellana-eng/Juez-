@@ -27,17 +27,35 @@ import type { Informe, XlegalJob } from "./types";
 export const MAX_DURATION_MS = 300_000;
 
 /**
- * Held back so the job can always close itself: when the budget fires, this is
- * what is left, and the webhook's schedule is computed from it (webhookScheduleFor
- * in lib/xlegal.ts: three sends of at least 12 s each, 46 s at worst), plus
- * WEBHOOK_CLOSEOUT_MARGIN_MS for the Blob writes and deletes after it and a few
- * seconds for the ones before. A test fails if the short schedule stops fitting.
- * A delivery with time to spare gets longer sends; this reserve is the floor. A
- * job the platform kills mid-flight writes NOTHING — no result, no webhook — and
- * that silence is what wedges the client on a job that will never finish. A
- * budget that leaves no room to report its own expiry is no budget at all.
+ * How much earlier than our `requestStartedAt` the platform may have started
+ * its maxDuration clock: requestStartedAt is Date.now() at the top of the
+ * handler, and a cold start (booting the function, loading the modules) comes
+ * before it. Vercel's documentation does not say whether that time counts
+ * (looked up 2026-11-14), and it is not measured here; a cold start of a Node
+ * function is usually well under this. Without it, the close-out's only slack
+ * was WEBHOOK_CLOSEOUT_MARGIN_MS, which is sized for the Blob calls after the
+ * webhook (up to ~8 requests) — a slow Blob and a long cold start together
+ * left none, and a function that dies between x-legal's 2xx and
+ * forgetDeliveredJob keeps the job record and the full result for 30 days.
+ * So the job's deadline stops this short of maxDuration.
  */
-export const CLOSEOUT_RESERVE_MS = 60_000;
+export const PLATFORM_START_ALLOWANCE_MS = 3_000;
+
+/**
+ * Held back so the job can always close itself: when the budget fires, this
+ * minus PLATFORM_START_ALLOWANCE_MS is what the close-out sees as left, and the
+ * webhook's schedule is computed from it (webhookScheduleFor in lib/xlegal.ts:
+ * three sends of at least 12 s each, so ≤ 10 s + 3 × 13.3 s = 50 s at worst
+ * with the reserve intact, and never more than the time left minus 10 s), plus
+ * WEBHOOK_CLOSEOUT_MARGIN_MS for the Blob writes and deletes after it and a few
+ * seconds for the ones before. A test fails if the short schedule stops
+ * fitting. A delivery with time to spare gets longer sends; this reserve is the
+ * floor. A job the platform kills mid-flight writes NOTHING — no result, no
+ * webhook — and that silence is what wedges the client on a job that will
+ * never finish. A budget that leaves no room to report its own expiry is no
+ * budget at all. (60 s until 2026-11-14; +3 s for PLATFORM_START_ALLOWANCE_MS.)
+ */
+export const CLOSEOUT_RESERVE_MS = 63_000;
 
 /** Floor: below this a generation is hopeless anyway, so fail fast and clean. */
 const MIN_BUDGET_MS = 30_000;
@@ -105,8 +123,9 @@ export async function processXlegalJob(
   const state: JobState = { closed: false };
   const budgetMs = deps.budgetMs ?? jobBudgetMs(requestStartedAt);
   // What the close-out measures its webhook's schedule against: past it, the
-  // platform ends the function, whatever is still running.
-  const deadline = requestStartedAt + MAX_DURATION_MS;
+  // platform ends the function, whatever is still running — perhaps up to
+  // PLATFORM_START_ALLOWANCE_MS before our clock says so.
+  const deadline = requestStartedAt + MAX_DURATION_MS - PLATFORM_START_ALLOWANCE_MS;
   console.log(`[xlegal:job] ${jobId} budget ${Math.round(budgetMs / 1000)}s`);
 
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;

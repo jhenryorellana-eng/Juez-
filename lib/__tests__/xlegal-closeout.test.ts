@@ -19,7 +19,7 @@ import {
   tokenMapPath,
   webhookWorstCaseMs,
 } from "../xlegal";
-import { CLOSEOUT_RESERVE_MS } from "../xlegal-job";
+import { CLOSEOUT_RESERVE_MS, PLATFORM_START_ALLOWANCE_MS } from "../xlegal-job";
 import type { Informe, XlegalJob, XlegalResult } from "../types";
 import { FakeStore, captureLogs } from "./fake-store";
 
@@ -551,7 +551,14 @@ describe("the webhook's schedule, from the time the function has left", () => {
 
   it("a job the budget closed (only the reserve left) gets the short sends", async () => {
     await closeFailedJob(
-      { jobId: JOB_ID, job, token: TOKEN, code: "TIMEOUT_BUDGET", deadline: Date.now() + CLOSEOUT_RESERVE_MS },
+      {
+        jobId: JOB_ID,
+        job,
+        token: TOKEN,
+        code: "TIMEOUT_BUDGET",
+        // What the job hands over when its budget fires: its deadline stops the allowance short.
+        deadline: Date.now() + CLOSEOUT_RESERVE_MS - PLATFORM_START_ALLOWANCE_MS,
+      },
       store,
     );
     const schedule = store.schedules[0];

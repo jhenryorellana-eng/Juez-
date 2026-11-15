@@ -17,9 +17,11 @@ export const PRO_MAX_DURATION_MS = 300_000;
 /**
  * What the job still does once the report is generated, held back from the
  * generation's deadline: render the PDF, store it, store the result and delete
- * the documents. A generation that runs into it would leave the job to be
- * killed with no result written — and a killed job is a client who paid, left
- * on «processing».
+ * the documents (a few seconds each, at worst). A generation that runs into it
+ * would leave the job to be killed with no result written — and a killed job is
+ * a client who paid, left on «processing». The slack it leaves also covers a
+ * platform clock that started before requestStartedAt (a cold start; see
+ * PLATFORM_START_ALLOWANCE_MS in lib/xlegal-job.ts).
  */
 export const PRO_CLOSEOUT_RESERVE_MS = 30_000;
 

@@ -17,7 +17,7 @@ import {
   webhookWorstCaseMs,
   type XlegalWebhookPayload,
 } from "../xlegal";
-import { CLOSEOUT_RESERVE_MS, MAX_DURATION_MS } from "../xlegal-job";
+import { CLOSEOUT_RESERVE_MS, MAX_DURATION_MS, PLATFORM_START_ALLOWANCE_MS } from "../xlegal-job";
 import { captureLogs } from "./fake-store";
 
 const JOB_ID = "0b6f1c1e-6a39-4c51-9f0c-2b1f8f4a7d10";
@@ -171,8 +171,13 @@ describe("deliverXlegalWebhook", () => {
 /*  The schedule, from the time the function has left                          */
 /* -------------------------------------------------------------------------- */
 
-/** Time left when the budget closes a job: the reserve, minus the failure close-out's writes before the webhook. */
-const BUDGET_PATH_REMAINING_MS = [CLOSEOUT_RESERVE_MS - 4_000, CLOSEOUT_RESERVE_MS - 1_000, CLOSEOUT_RESERVE_MS];
+/**
+ * Time left when the budget closes a job, as the close-out measures it: the
+ * reserve, minus the allowance the job's deadline keeps for the platform's
+ * clock, minus the failure close-out's writes before the webhook.
+ */
+const BUDGET_PATH_LEFT_MS = CLOSEOUT_RESERVE_MS - PLATFORM_START_ALLOWANCE_MS;
+const BUDGET_PATH_REMAINING_MS = [BUDGET_PATH_LEFT_MS - 4_000, BUDGET_PATH_LEFT_MS - 1_000, BUDGET_PATH_LEFT_MS];
 
 const ON_COMPLETED = "evaluation.completed";
 const ON_FAILED = "evaluation.failed";
@@ -288,10 +293,12 @@ describe("webhookScheduleFor", () => {
     // 10 s of waits + 3 × 12 s.
     assert.equal(WEBHOOK_SHORT_WORST_CASE_MS, 46_000);
     // closeFailedJob deletes our documents and writes the error result BEFORE
-    // the webhook: at least 4 s for those two calls.
+    // the webhook: at least 4 s for those two calls. And the job's deadline
+    // already stops PLATFORM_START_ALLOWANCE_MS short of maxDuration.
     assert.ok(
-      WEBHOOK_SHORT_WORST_CASE_MS + WEBHOOK_CLOSEOUT_MARGIN_MS + 4_000 <= CLOSEOUT_RESERVE_MS,
-      `short worst case ${WEBHOOK_SHORT_WORST_CASE_MS} ms + margin vs reserve ${CLOSEOUT_RESERVE_MS} ms`,
+      WEBHOOK_SHORT_WORST_CASE_MS + WEBHOOK_CLOSEOUT_MARGIN_MS + 4_000 + PLATFORM_START_ALLOWANCE_MS <=
+        CLOSEOUT_RESERVE_MS,
+      `short worst case ${WEBHOOK_SHORT_WORST_CASE_MS} ms + margin + writes + allowance vs reserve ${CLOSEOUT_RESERVE_MS} ms`,
     );
   });
 
